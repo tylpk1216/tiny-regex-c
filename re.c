@@ -436,81 +436,6 @@ static int matchone(regex_t p, char c)
   }
 }
 
-#if 0
-static const char * matchstar_lazy(regex_t p, regex_t* pattern, const char* text)
-{
-  const char *end;
-  do
-  {
-    if ((end = matchpattern(pattern, text)))
-      return end;
-  }
-  while (*text && matchone(p, *text++));
-
-  return 0;
-}
-
-static const char * matchstar(regex_t p, regex_t* pattern, const char* text)
-{
-  const char *end, *start = text;
-  while (*text && matchone(p, *text)) { text++; }
-
-  while (text >= start) 
-  {
-    if ((end = matchpattern(pattern, text--)))
-      return end;
-  }
-  
-  return 0;
-}
-
-static const char * matchplus_lazy(regex_t p, regex_t* pattern, const char* text)
-{
-  const char *end;
-  while (*text && matchone(p, *text++))
-  {
-    if ((end = matchpattern(pattern, text)))
-      return end;
-  }
-  return 0;
-}
-
-static const char * matchplus(regex_t p, regex_t* pattern, const char* text)
-{
-  const char *end, *start = text;
-  while (*text && matchone(p, *text)) { text++; }
-
-  while (text > start) 
-  {
-    if ((end = matchpattern(pattern, text--)))
-      return end;
-  }
-  
-  return 0;
-}
-
-static const char * matchqmark_lazy(regex_t p, regex_t* pattern, const char* text)
-{
-  const char *end;
-  if ((end = matchpattern(pattern, text)))
-      return end;
-  if (*text && matchone(p, *text++))
-    return matchpattern(pattern, text);
-  return 0;
-}
-
-static const char * matchqmark(regex_t p, regex_t* pattern, const char* text)
-{
-  const char *end;
-  if (*text && matchone(p, *text)) { text++; }
-  
-  if ((end = matchpattern(pattern, text)))
-      return end;
-  return matchpattern(pattern, --text);
-}
-
-#endif
-
 static const char * matchquant_lazy(regex_t p, regex_t* pattern, const char* text, int min, int max)
 {
   const char *end;
@@ -561,26 +486,20 @@ static const char * matchpattern(regex_t* pattern, const char* text)
       switch (pattern[1].type)
       {
         case QMARK:
-          //return matchqmark(pattern[0], &pattern[2], text);
           return matchquant(pattern[0], &pattern[2], text, 0, 1);
         case QMARK_LAZY:
-          //return matchqmark_lazy(pattern[0], &pattern[2], text);
           return matchquant_lazy(pattern[0], &pattern[2], text, 0, 1);
         case QUANT:
           return matchquant(pattern[0], &pattern[2], text, pattern[1].ccl[0], pattern[1].ccl[1]);
         case QUANT_LAZY:
           return matchquant_lazy(pattern[0], &pattern[2], text, pattern[1].ccl[0], pattern[1].ccl[1]);
         case STAR:
-          //return matchstar(pattern[0], &pattern[2], text);
           return matchquant(pattern[0], &pattern[2], text, 0, MAX_COUNT);
         case STAR_LAZY:
-          //return matchstar_lazy(pattern[0], &pattern[2], text);
           return matchquant_lazy(pattern[0], &pattern[2], text, 0, MAX_COUNT);
         case PLUS:
-          //return matchplus(pattern[0], &pattern[2], text);
           return matchquant(pattern[0], &pattern[2], text, 1, MAX_COUNT);
         case PLUS_LAZY:
-          //return matchplus_lazy(pattern[0], &pattern[2], text);
           return matchquant_lazy(pattern[0], &pattern[2], text, 1, MAX_COUNT);
         default: break; // w/e
       }
