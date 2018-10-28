@@ -35,9 +35,11 @@
 
 /* Definitions: */
 
-#define MAX_REGEXP_OBJECTS      30    /* Max number of regex symbols in expression. */
-#define MAX_CCLASS_LEN      40    /* Max length of character-class buffer in.   */
-#define MAX_QUANT              255    /* Max b in {a,b}. 255 since a & b are char   */
+#define MAX_REGEXP_OBJECTS   30    /* Max number of regex symbols in expression. */
+#define MAX_CCLASS_LEN       40    /* Max length of character-class buffer in.   */
+#define MAX_QUANT           255    /* Max b in {a,b}. 255 since a & b are char   */
+#define MAX_COUNT         40000    /* for + and *,  above 32768 for test2        */
+
 
 
 #define X_RE_TYPES  X(UNUSED) X(DOT) X(BEGIN) X(END) X(QUANT) X(QUANT_LAZY) \
@@ -83,8 +85,8 @@ int re_match(const char* pattern, const char* text)
 
 int re_matchp(re_t pattern, const char* text)
 {
-  const char *end, *start = text;
-  //(void) start;
+  const char *end;
+  //const char *start = text;
   if (!pattern)
     return -1;
   
@@ -109,8 +111,7 @@ int re_matchp(re_t pattern, const char* text)
       if (text[0] == '\0') //Fixme: ??? 
         return -1;
       //printf("Match: %i, %li\n", idx, end - text);
-      //if(end - start > 0)
-        return idx;
+      return idx;
     }
   }
   while (*text++ != '\0');
@@ -422,7 +423,7 @@ static int matchone(regex_t p, char c)
 {
   switch (p.type)
   {
-    case DOT:            return 1;
+    case DOT:            return (c != '\n' && c != '\r');
     case CCLASS:     return  matchcharclass(c, p.ccl);
     case INV_CCLASS: return !matchcharclass(c, p.ccl);
     case DIGIT:          return  matchdigit(c);
@@ -435,6 +436,7 @@ static int matchone(regex_t p, char c)
   }
 }
 
+#if 0
 static const char * matchstar_lazy(regex_t p, regex_t* pattern, const char* text)
 {
   const char *end;
@@ -487,7 +489,7 @@ static const char * matchplus(regex_t p, regex_t* pattern, const char* text)
   return 0;
 }
 
-static const char * matchquestion_lazy(regex_t p, regex_t* pattern, const char* text)
+static const char * matchqmark_lazy(regex_t p, regex_t* pattern, const char* text)
 {
   const char *end;
   if ((end = matchpattern(pattern, text)))
@@ -497,7 +499,7 @@ static const char * matchquestion_lazy(regex_t p, regex_t* pattern, const char* 
   return 0;
 }
 
-static const char * matchquestion(regex_t p, regex_t* pattern, const char* text)
+static const char * matchqmark(regex_t p, regex_t* pattern, const char* text)
 {
   const char *end;
   if (*text && matchone(p, *text)) { text++; }
@@ -507,7 +509,9 @@ static const char * matchquestion(regex_t p, regex_t* pattern, const char* text)
   return matchpattern(pattern, --text);
 }
 
-static const char * matchquantifier_lazy(regex_t p, regex_t* pattern, const char* text, int min, int max)
+#endif
+
+static const char * matchquant_lazy(regex_t p, regex_t* pattern, const char* text, int min, int max)
 {
   const char *end;
   max -= min;
@@ -525,7 +529,7 @@ static const char * matchquantifier_lazy(regex_t p, regex_t* pattern, const char
   return 0;
 }
 
-static const char * matchquantifier(regex_t p, regex_t* pattern, const char* text, int min, int max)
+static const char * matchquant(regex_t p, regex_t* pattern, const char* text, int min, int max)
 {
   const char *end, *start = text;
   while (max > 0 && *text && matchone(p, *text)) { text++; max--; }
@@ -538,39 +542,6 @@ static const char * matchquantifier(regex_t p, regex_t* pattern, const char* tex
   
   return 0;
 }
-
-#if 0
-
-/* Recursive matching */
-static int matchpattern(regex_t* pattern, const char* text)
-{
-  if ((pattern[0].type == UNUSED) || (pattern[1].type == QMARK))
-  {
-    return matchquestion(pattern[1], &pattern[2], text);
-  }
-  else if (pattern[1].type == STAR)
-  {
-    return matchstar(pattern[0], &pattern[2], text);
-  }
-  else if (pattern[1].type == PLUS)
-  {
-    return matchplus(pattern[0], &pattern[2], text);
-  }
-  else if ((pattern[0].type == END) && pattern[1].type == UNUSED)
-  {
-    return text[0] == '\0';
-  }
-  else if ((text[0] != '\0') && matchone(pattern[0], text[0]))
-  {
-    return matchpattern(&pattern[1], text+1);
-  }
-  else
-  {
-    return 0;
-  }
-}
-
-#else
 
 /* Iterative matching */
 static const char * matchpattern(regex_t* pattern, const char* text)
@@ -590,21 +561,27 @@ static const char * matchpattern(regex_t* pattern, const char* text)
       switch (pattern[1].type)
       {
         case QMARK:
-          return matchquestion(pattern[0], &pattern[2], text);
+          //return matchqmark(pattern[0], &pattern[2], text);
+          return matchquant(pattern[0], &pattern[2], text, 0, 1);
         case QMARK_LAZY:
-          return matchquestion_lazy(pattern[0], &pattern[2], text);
+          //return matchqmark_lazy(pattern[0], &pattern[2], text);
+          return matchquant_lazy(pattern[0], &pattern[2], text, 0, 1);
         case QUANT:
-          return matchquantifier(pattern[0], &pattern[2], text, pattern[1].ccl[0], pattern[1].ccl[1]);
+          return matchquant(pattern[0], &pattern[2], text, pattern[1].ccl[0], pattern[1].ccl[1]);
         case QUANT_LAZY:
-          return matchquantifier_lazy(pattern[0], &pattern[2], text, pattern[1].ccl[0], pattern[1].ccl[1]);
+          return matchquant_lazy(pattern[0], &pattern[2], text, pattern[1].ccl[0], pattern[1].ccl[1]);
         case STAR:
-          return matchstar(pattern[0], &pattern[2], text);
+          //return matchstar(pattern[0], &pattern[2], text);
+          return matchquant(pattern[0], &pattern[2], text, 0, MAX_COUNT);
         case STAR_LAZY:
-          return matchstar_lazy(pattern[0], &pattern[2], text);
+          //return matchstar_lazy(pattern[0], &pattern[2], text);
+          return matchquant_lazy(pattern[0], &pattern[2], text, 0, MAX_COUNT);
         case PLUS:
-          return matchplus(pattern[0], &pattern[2], text);
+          //return matchplus(pattern[0], &pattern[2], text);
+          return matchquant(pattern[0], &pattern[2], text, 1, MAX_COUNT);
         case PLUS_LAZY:
-          return matchplus_lazy(pattern[0], &pattern[2], text);
+          //return matchplus_lazy(pattern[0], &pattern[2], text);
+          return matchquant_lazy(pattern[0], &pattern[2], text, 1, MAX_COUNT);
         default: break; // w/e
       }
     }
@@ -613,5 +590,3 @@ static const char * matchpattern(regex_t* pattern, const char* text)
 
   return 0;
 }
-
-#endif
