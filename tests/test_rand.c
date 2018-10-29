@@ -15,8 +15,8 @@ int main(int argc, char** argv)
 {
   if (argc == 3)
   {
-    int m = re_match(argv[1], argv[2]);
-    if (m != -1) 
+    const char *m = re_match(argv[1], argv[2], NULL);
+    if (m) 
       return 0;
   }
   else

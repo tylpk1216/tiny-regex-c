@@ -87,10 +87,11 @@ char* test_vector[][3] =
   { OK,  ".?bar",                      "real_bar"        },
   { NOK, ".?bar",                      "real_foo"        },
   { NOK, "X?Y",                        "Z"               },
+  { OK, ".?jjsj",                    "jjsj"            },
+  {NOK, "[a-z].[A-Z]", "y\nL" },
+
 };
 
-
-void re_print(re_t);
 
 int main()
 {
@@ -100,31 +101,40 @@ int main()
     size_t ntests = sizeof(test_vector) / sizeof(*test_vector);
     size_t nfailed = 0;
     size_t i;
+    re_comp regex;
 
     for (i = 0; i < ntests; ++i)
     {
         pattern = test_vector[i][1];
         text = test_vector[i][2];
         should_fail = (test_vector[i][0] == NOK);
-
-        int m = re_match(pattern, text);
+        int ret = re_compile(pattern, &regex);
+        if(ret == 0)
+        {
+          printf("\n");
+          re_print(&regex);
+          fprintf(stderr, "[%lu/%lu]: pattern '%s' failed to compile \n", (i+1), ntests, pattern);
+          nfailed += 1;
+          continue;
+        }
+        const char *m = re_matchp(&regex, text, NULL);
 
         if (should_fail)
         {
-            if (m != (-1))
+            if (m)
             {
                 printf("\n");
-                re_print(re_compile(pattern));
+                re_print(&regex);
                 fprintf(stderr, "[%lu/%lu]: pattern '%s' matched '%s' unexpectedly. \n", (i+1), ntests, pattern, text);
                 nfailed += 1;
             }
         }
         else
         {
-            if (m == (-1))
+            if (!m)
             {
                 printf("\n");
-                re_print(re_compile(pattern));
+                re_print(&regex);
                 fprintf(stderr, "[%lu/%lu]: pattern '%s' didn't match '%s' as expected. \n", (i+1), ntests, pattern, text);
                 nfailed += 1;
             }
