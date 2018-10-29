@@ -55,11 +55,11 @@ int re_compile(const char *pattern, re_comp *compiled);
 
 
 /* Find matches of the compiled pattern inside text. */
-int re_matchp(const re_comp *compiled, const char *text, const char **next);
+const char *re_matchp(const re_comp *compiled, const char *text, const char **next);
 
 
 /* Find matches of the txt pattern inside text (will compile automatically first). */
-int re_match(const char *pattern, const char *text, const char **next);
+const char *re_match(const char *pattern, const char *text, const char **next);
 
 
 void re_print(const re_comp *compiled);

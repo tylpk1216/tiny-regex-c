@@ -39,7 +39,7 @@
 
 
 
-#define X_RE_TYPES  X(UNUSED) X(DOT) X(BEGIN) X(END) X(QUANT) X(QUANT_LAZY) \
+#define X_RE_TYPES  X(NONE) X(DOT) X(BEGIN) X(END) X(QUANT) X(QUANT_LAZY) \
         X(QMARK) X(QMARK_LAZY) X(STAR) X(STAR_LAZY) X(PLUS) X(PLUS_LAZY) \
         X(CHAR) X(CCLASS) X(INV_CCLASS) X(DIGIT) X(NOT_DIGIT) X(ALPHA) X(NOT_ALPHA) \
         X(WSPACE) X(NOT_WSPACE) X(BRANCH)
@@ -54,68 +54,64 @@ enum { X_RE_TYPES };
 static const char *matchpattern(const re_node *pattern, const char *text);
 
 /* Public functions: */
-int re_match(const char *pattern, const char *text, const char **next)
+const char *re_match(const char *pattern, const char *text, const char **end)
 {
     re_comp compiled = {0};
     int ret = re_compile(pattern, &compiled);
     if (!ret)
     {
         printf("compiling pattern '%s' failed\n", pattern);
-        return -1;
+        return 0;
     }
-    return re_matchp(&compiled, text, next);
+    return re_matchp(&compiled, text, end);
 }
 
-int re_matchp(const re_comp *compiled, const char *text, const char **next)
+const char *re_matchp(const re_comp *compiled, const char *text, const char **end)
 {
-    if (!compiled)
-        return -1;
+    if (!compiled || !text || !*text)
+        return 0;
 
-    const char *end;
+    const char *me;
+    const re_node *node = compiled->nodes;
 
-    const re_node *pattern = compiled->nodes;
-
-    if (pattern[0].type == BEGIN)
+    if (node[0].type == BEGIN)
     {
-        if ((end = matchpattern(&pattern[1], text)))
+        if ((me = matchpattern(&node[1], text)))
         {
-            if (next) *next = end;
-            return 0;
+            if (end) *end = me;
+            return text;
         }
-        return -1;
+        return 0;
     }
-
-    int idx = -1;
 
     do
     {
-        idx += 1;
-
-        if ((end = matchpattern(pattern, text)))
+        if ((me = matchpattern(node, text)))
         {
-            if (text[0] == '\0') //Fixme: ???
-                return -1;
-            if (next) *next = end;
-            return idx;
+            if (!*text) //Fixme: ???
+                return 0;
+            if (end) *end = me;
+            return text;
         }
     }
-    while (*text++ != '\0');
+    while (*text++);
 
-    return -1;
+    return 0;
 }
 
 int re_compile(const char *pattern, re_comp *compiled)
 {
     if (!compiled)
         return 0;
-    re_node *re_compiled = compiled->nodes;
-    unsigned char *ccl_buf = compiled->buffer;
+    re_node *nodes = compiled->nodes;
+    unsigned char *buf = compiled->buffer;
+    unsigned char ischar = 0;
 
-    int ccl_bufidx = 1;
+    int bufidx = 0;
 
     char c;     /* current char in pattern   */
     int i = 0;  /* index into pattern        */
-    int j = 0;  /* index into re_compiled    */
+    int j = 0;  /* index into nodes    */
 
     while (pattern[i] != '\0' && (j + 1 < MAX_RENODES))
     {
@@ -124,20 +120,27 @@ int re_compile(const char *pattern, re_comp *compiled)
         switch (c)
         {
         /* Meta-characters: */
-        case '^': {    re_compiled[j].type = BEGIN;           } break;
-        case '$': {    re_compiled[j].type = END;             } break;
-        case '.': {    re_compiled[j].type = DOT;             } break;
+        case '^': { ischar = 0; nodes[j].type = BEGIN; } break;
+        case '$': { ischar = 0; nodes[j].type = END;   } break;
+        case '.': { ischar = 1; nodes[j].type = DOT;   } break;
         case '*':
-            re_compiled[j].type = (pattern[i + 1] == '?') ? (i++, STAR_LAZY) : STAR; break;
+            if (ischar == 0) return 0;
+            ischar = 0;
+            nodes[j].type = (pattern[i + 1] == '?') ? (i++, STAR_LAZY) : STAR; break;
         case '+':
-            re_compiled[j].type = (pattern[i + 1] == '?') ? (i++, PLUS_LAZY) : PLUS; break;
+            if (ischar == 0) return 0;
+            ischar = 0;
+            nodes[j].type = (pattern[i + 1] == '?') ? (i++, PLUS_LAZY) : PLUS; break;
         case '?':
-            re_compiled[j].type = (pattern[i + 1] == '?') ? (i++, QMARK_LAZY) : QMARK; break;
-        /*    case '|': {    re_compiled[j].type = BRANCH;          } break; <-- not working properly */
+            if (ischar == 0) return 0;
+            ischar = 0;
+            nodes[j].type = (pattern[i + 1] == '?') ? (i++, QMARK_LAZY) : QMARK; break;
+        /*    case '|': {    nodes[j].type = BRANCH;          } break; <-- not working properly */
 
         /* Escaped character-classes (\s \w ...): */
         case '\\':
         {
+            ischar = 1;
             i++;
             if (pattern[i] == '\0')
             {
@@ -148,31 +151,31 @@ int re_compile(const char *pattern, re_comp *compiled)
             switch (pattern[i])
             {
             /* Meta-character: */
-            case 'd': { re_compiled[j].type = DIGIT;      } break;
-            case 'D': { re_compiled[j].type = NOT_DIGIT;  } break;
-            case 'w': { re_compiled[j].type = ALPHA;      } break;
-            case 'W': { re_compiled[j].type = NOT_ALPHA;  } break;
-            case 's': { re_compiled[j].type = WSPACE;     } break;
-            case 'S': { re_compiled[j].type = NOT_WSPACE; } break;
+            case 'd': { nodes[j].type = DIGIT;      } break;
+            case 'D': { nodes[j].type = NOT_DIGIT;  } break;
+            case 'w': { nodes[j].type = ALPHA;      } break;
+            case 'W': { nodes[j].type = NOT_ALPHA;  } break;
+            case 's': { nodes[j].type = WSPACE;     } break;
+            case 'S': { nodes[j].type = NOT_WSPACE; } break;
 
             /* Escaped character, e.g. '.' or '$' */
             default:
-            {
-                re_compiled[j].type = CHAR;
-                re_compiled[j].ch = pattern[i];
-            } break;
+                nodes[j].type = CHAR;
+                nodes[j].ch = pattern[i];
+                break;
             }
         } break;
 
         /* Character class: */
         case '[':
         {
+            ischar = 1;
             /* Remember where the char-buffer starts. */
-            int buf_begin = ccl_bufidx;
+            int buf_begin = bufidx;
             char nc = pattern[i + 1];
 
             /* Look-ahead to determine if negated */
-            re_compiled[j].type = (nc == '^') ? (i++, INV_CCLASS) : CCLASS;
+            nodes[j].type = (nc == '^') ? (i++, INV_CCLASS) : CCLASS;
 
             /* Copy characters inside [..] to buffer */
             while (pattern[++i] != ']' && pattern[i] != '\0') /* Missing ] */
@@ -186,9 +189,9 @@ int re_compile(const char *pattern, re_comp *compiled)
                     if (nc == 's' || nc == 'S' || nc == 'w' || nc == 'W' ||
                             nc == 'd' || nc == 'D' || nc == '\\')
                     {
-                        if (ccl_bufidx >= MAX_REBUFLEN - 2)
+                        if (bufidx >= MAX_REBUFLEN - 2)
                             return 0;
-                        ccl_buf[ccl_bufidx++] = pattern[i];
+                        buf[bufidx++] = pattern[i];
                     }
                     i++;
                 }
@@ -197,12 +200,12 @@ int re_compile(const char *pattern, re_comp *compiled)
                     if (pattern[i] > pattern[i + 2])
                         return 0;
                 }
-                if (ccl_bufidx >= MAX_REBUFLEN - 1)
+                if (bufidx >= MAX_REBUFLEN - 1)
                 {
                     //fputs("exceeded internal buffer!\n", stderr);
                     return 0;
                 }
-                ccl_buf[ccl_bufidx++] = pattern[i];
+                buf[bufidx++] = pattern[i];
             }
             if (pattern[i] != ']') // pattern[i] == '\0'
             {
@@ -210,16 +213,18 @@ int re_compile(const char *pattern, re_comp *compiled)
                 return 0;
             }
             /* Null-terminate string end */
-            ccl_buf[ccl_bufidx++] = 0;
-            re_compiled[j].ccl = &ccl_buf[buf_begin];
+            buf[bufidx++] = 0;
+            nodes[j].ccl = &buf[buf_begin];
         } break;
 
         /* Quantifier: */
         case '{':
         {
-            //re_compiled[j].type = QUANT;
+            if (ischar == 0) return 0;
+            ischar = 0;
+            //nodes[j].type = QUANT;
             // consumes 2 chars (one char for each min and max <= 255)
-            if (ccl_bufidx >= MAX_REBUFLEN - 1)
+            if (bufidx >= MAX_REBUFLEN - 1)
             {
                 return 0;
             }
@@ -236,7 +241,7 @@ int re_compile(const char *pattern, re_comp *compiled)
             {
                 return 0;
             }
-            ccl_buf[ccl_bufidx] = val;
+            buf[bufidx] = val;
             if (pattern[i] == ',')
             {
                 i++;
@@ -254,30 +259,31 @@ int re_compile(const char *pattern, re_comp *compiled)
                         val = 10 * val + (pattern[i++] - '0');
                     }
 
-                    if (val > MAX_QUANT || val < ccl_buf[ccl_bufidx])
+                    if (val > MAX_QUANT || val < buf[bufidx])
                     {
                         return 0;
                     }
                 }
             }
-            re_compiled[j].type = (pattern[i + 1] == '?') ? (i++, QUANT_LAZY) : QUANT;
-            ccl_buf[ccl_bufidx + 1] = val;
-            re_compiled[j].ccl = &ccl_buf[ccl_bufidx];
-            ccl_bufidx += 2;
+            nodes[j].type = (pattern[i + 1] == '?') ? (i++, QUANT_LAZY) : QUANT;
+            buf[bufidx + 1] = val;
+            nodes[j].ccl = &buf[bufidx];
+            bufidx += 2;
         } break;
 
         /* Other characters: */
         default:
         {
-            re_compiled[j].type = CHAR;
-            re_compiled[j].ch = c;
+            ischar = 1;
+            nodes[j].type = CHAR;
+            nodes[j].ch = c;
         } break;
         }
         i += 1;
         j += 1;
     }
-    /* 'UNUSED' is a sentinel used to indicate end-of-pattern */
-    re_compiled[j].type = UNUSED;
+    /* 'NONE' is a sentinel used to indicate end-of-pattern */
+    nodes[j].type = NONE;
 
     return 1;
 }
@@ -402,11 +408,11 @@ static const char *matchpattern(const re_node *pattern, const char *text)
 {
     do
     {
-        if (pattern[0].type == UNUSED)
+        if (pattern[0].type == NONE)
         {
             return text;
         }
-        else if ((pattern[0].type == END) && pattern[1].type == UNUSED)
+        else if ((pattern[0].type == END) && pattern[1].type == NONE)
         {
             return (*text == '\0') ? text : 0;
         }
@@ -458,7 +464,7 @@ void re_print(const re_comp *compiled)
     int i;
     for (i = 0; i < MAX_RENODES; ++i)
     {
-        if (pattern[i].type == UNUSED)
+        if (pattern[i].type == NONE)
         {
             break;
         }

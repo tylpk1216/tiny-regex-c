@@ -2,7 +2,7 @@
 CC := gcc
 
 # Number of random text expressions to generate, for random testing
-NRAND_TESTS := 1000
+NRAND_TESTS := 100
 
 PYTHON != if (python --version 2>&1 | grep -q 'Python 2\..*'); then \
             echo 'python';                                          \
@@ -14,11 +14,13 @@ PYTHON != if (python --version 2>&1 | grep -q 'Python 2\..*'); then \
           fi
 
 # Flags to pass to compiler
+#CFLAGS := -O3 -Wall -Wextra -pedantic -std=c99 -I.
 CFLAGS := -O3 -Wall -Wextra -std=c99 -I.
 
 all:
 	@$(CC) $(CFLAGS) re.c tests/test1.c     -o tests/test1
 	@$(CC) $(CFLAGS) re.c tests/test2.c     -o tests/test2
+	@$(CC) $(CFLAGS) re.c tests/test_print.c     -o tests/test_print
 	@$(CC) $(CFLAGS) re.c tests/test_rand.c -o tests/test_rand
 	@$(CC) $(CFLAGS) re.c tests/test_rand_neg.c -o tests/test_rand_neg
 
@@ -36,7 +38,7 @@ test: all
 	@./tests/test1
 	@echo Testing patterns against $(NRAND_TESTS) random strings matching the Python implementation and comparing:
 	@echo
-	@$(PYTHON) ./scripts/regex_test.py \\d+\\w?\\D\\d             $(NRAND_TESTS)
+	@$(PYTHON) ./scripts/regex_test.py \\d+\\w?\\d\\d             $(NRAND_TESTS)
 	@$(PYTHON) ./scripts/regex_test.py \\s+[a-zA-Z0-9?]*          $(NRAND_TESTS)
 	@$(PYTHON) ./scripts/regex_test.py \\w*\\d?\\w\\?             $(NRAND_TESTS)
 	@$(PYTHON) ./scripts/regex_test.py [^\\d]+\\\\?\\s            $(NRAND_TESTS)
@@ -100,7 +102,7 @@ test: all
 	@$(PYTHON) ./scripts/regex_test_neg.py .*123faerdig           $(NRAND_TESTS)
 	@echo
 	@echo
-	@./tests/test2
+	@#./tests/test2
 	@echo
 	@echo
 
