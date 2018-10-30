@@ -8,14 +8,19 @@
  *
  * Supports:
  * ---------
- *   '.'        Dot, matches any character
- *   '^'        Start anchor, matches beginning of string
+ *   '^'        Start anchor, matches start of string
  *   '$'        End anchor, matches end of string
- *   '*'        Asterisk, match zero or more (greedy)
- *   '+'        Plus, match one or more (greedy)
- *   '?'        Question, match zero or one (non-greedy)
+ *
+ *   '*'        Asterisk, match zero or more (greedy, *? lazy)
+ *   '+'        Plus, match one or more (greedy, +? lazy)
+ *   '{m,n}'    Quantifier, match min. 'm' and max. 'n' (greedy, {m,n}? lazy)
+ *   '{m}'                  exactly 'm'
+ *   '{m,}'                 match min 'm' and max. MAX_QUANT
+ *   '?'        Question, match zero or one (greedy, ?? lazy)
+ *
+ *   '.'        Dot, matches any character except newline (\r, \n)
  *   '[abc]'    Character class, match if one of {'a', 'b', 'c'}
- *   '[^abc]'   Inverted class, match if NOT one of {'a', 'b', 'c'} -- NOTE: feature is currently broken!
+ *   '[^abc]'   Inverted class, match if NOT one of {'a', 'b', 'c'}
  *   '[a-zA-Z]' Character ranges, the character set of the ranges { a-z | A-Z }
  *   '\s'       Whitespace, \t \f \r \n \v and spaces
  *   '\S'       Non-whitespace
@@ -23,7 +28,7 @@
  *   '\W'       Non-alphanumeric
  *   '\d'       Digits, [0-9]
  *   '\D'       Non-digits
- *
+ *   '\X'       Character itself where X matches [^sSwWdD] (e.g. '\\' is '\')
  *
  */
 
@@ -36,7 +41,7 @@
 /* Definitions: */
 #define MAX_QUANT           255    /* Max b in {a,b}. 255 since a & b are char   */
 #define MAX_COUNT         40000    /* for + and *,  above 32768 for test2        */
-
+//#define RE_DOTANY  //dot matches everything including \r and \n
 
 
 #define X_RE_TYPES  X(NONE) X(DOT) X(BEGIN) X(END) X(QUANT) X(QUANT_LAZY) \
@@ -68,17 +73,18 @@ const char *re_match(const char *pattern, const char *text, const char **end)
 
 const char *re_matchp(const re_comp *compiled, const char *text, const char **end)
 {
-    if (!compiled || !text || !*text)
+    if (!compiled || !text)
         return 0;
 
-    const char *me;
+    const char *mend;
     const re_node *node = compiled->nodes;
 
     if (node[0].type == BEGIN)
     {
-        if ((me = matchpattern(&node[1], text)))
+        mend = matchpattern(&node[1], text);
+        if (mend)
         {
-            if (end) *end = me;
+            if (end) { *end = mend; }
             return text;
         }
         return 0;
@@ -86,11 +92,12 @@ const char *re_matchp(const re_comp *compiled, const char *text, const char **en
 
     do
     {
-        if ((me = matchpattern(node, text)))
+        mend = matchpattern(node, text);
+        if (mend)
         {
-            if (!*text) //Fixme: ???
-                return 0;
-            if (end) *end = me;
+            //if (!*text) //Fixme: ???
+            //    return 0;
+            if (end) { *end = mend; }
             return text;
         }
     }
@@ -109,6 +116,7 @@ int re_compile(const char *pattern, re_comp *compiled)
 
     int bufidx = 0;
 
+    unsigned val; // for parsing numbers in {m,n}
     char c;     /* current char in pattern   */
     int i = 0;  /* index into pattern        */
     int j = 0;  /* index into nodes    */
@@ -120,19 +128,19 @@ int re_compile(const char *pattern, re_comp *compiled)
         switch (c)
         {
         /* Meta-characters: */
-        case '^': { ischar = 0; nodes[j].type = BEGIN; } break;
-        case '$': { ischar = 0; nodes[j].type = END;   } break;
-        case '.': { ischar = 1; nodes[j].type = DOT;   } break;
+        case '^': ischar = 0; nodes[j].type = BEGIN; break;
+        case '$': ischar = 0; nodes[j].type = END;   break;
+        case '.': ischar = 1; nodes[j].type = DOT;   break;
         case '*':
-            if (ischar == 0) return 0;
+            if (ischar == 0) { return 0; }
             ischar = 0;
             nodes[j].type = (pattern[i + 1] == '?') ? (i++, STAR_LAZY) : STAR; break;
         case '+':
-            if (ischar == 0) return 0;
+            if (ischar == 0) { return 0; }
             ischar = 0;
             nodes[j].type = (pattern[i + 1] == '?') ? (i++, PLUS_LAZY) : PLUS; break;
         case '?':
-            if (ischar == 0) return 0;
+            if (ischar == 0) { return 0; }
             ischar = 0;
             nodes[j].type = (pattern[i + 1] == '?') ? (i++, QMARK_LAZY) : QMARK; break;
         /*    case '|': {    nodes[j].type = BRANCH;          } break; <-- not working properly */
@@ -142,27 +150,21 @@ int re_compile(const char *pattern, re_comp *compiled)
         {
             ischar = 1;
             i++;
-            if (pattern[i] == '\0')
-            {
-                // dangling '\'
-                return 0;
-            }
+            // dangling slash ?
+            if (pattern[i] == '\0') { return 0; }
 
             switch (pattern[i])
             {
             /* Meta-character: */
-            case 'd': { nodes[j].type = DIGIT;      } break;
-            case 'D': { nodes[j].type = NOT_DIGIT;  } break;
-            case 'w': { nodes[j].type = ALPHA;      } break;
-            case 'W': { nodes[j].type = NOT_ALPHA;  } break;
-            case 's': { nodes[j].type = WSPACE;     } break;
-            case 'S': { nodes[j].type = NOT_WSPACE; } break;
+            case 'd': nodes[j].type = DIGIT;      break;
+            case 'D': nodes[j].type = NOT_DIGIT;  break;
+            case 'w': nodes[j].type = ALPHA;      break;
+            case 'W': nodes[j].type = NOT_ALPHA;  break;
+            case 's': nodes[j].type = WSPACE;     break;
+            case 'S': nodes[j].type = NOT_WSPACE; break;
 
             /* Escaped character, e.g. '.' or '$' */
-            default:
-                nodes[j].type = CHAR;
-                nodes[j].ch = pattern[i];
-                break;
+            default: nodes[j].type = CHAR; nodes[j].ch = pattern[i]; break;
             }
         } break;
 
@@ -182,36 +184,39 @@ int re_compile(const char *pattern, re_comp *compiled)
             {
                 if (pattern[i] == '\\')
                 {
-                    if (!(nc = pattern[i + 1]))
-                        return 0;
+                    nc = pattern[i + 1];
+                    if (!nc) { return 0; }
 
                     // skip slash for non meta chars and slash
                     if (nc == 's' || nc == 'S' || nc == 'w' || nc == 'W' ||
                             nc == 'd' || nc == 'D' || nc == '\\')
                     {
-                        if (bufidx >= MAX_REBUFLEN - 2)
-                            return 0;
-                        buf[bufidx++] = pattern[i];
+                        if (bufidx > MAX_REBUFLEN - 3) { return 0; }
+                        buf[bufidx++] = pattern[i++];
                     }
-                    i++;
+                    else
+                    {
+                        if (bufidx > MAX_REBUFLEN - 2) { return 0; }
+                        i++;
+                    }
+                    buf[bufidx++] = pattern[i];
                 }
                 else if (pattern[i + 1] == '-' && pattern[i + 2] != '0')
                 {
-                    if (pattern[i] > pattern[i + 2])
-                        return 0;
+                    if (pattern[i] > pattern[i + 2]) { return 0; }
+                    if (bufidx > MAX_REBUFLEN - 4) { return 0; }
+                    buf[bufidx++] = pattern[i++];
+                    buf[bufidx++] = pattern[i++];
+                    buf[bufidx++] = pattern[i];
                 }
-                if (bufidx >= MAX_REBUFLEN - 1)
+                else
                 {
-                    //fputs("exceeded internal buffer!\n", stderr);
-                    return 0;
+                    if (bufidx > MAX_REBUFLEN - 2) { return 0; }
+                    buf[bufidx++] = pattern[i];
                 }
-                buf[bufidx++] = pattern[i];
             }
-            if (pattern[i] != ']') // pattern[i] == '\0'
-            {
-                //printf("char class missing ] at %i\n", i);
-                return 0;
-            }
+
+            if (pattern[i] != ']') { return 0; }
             /* Null-terminate string end */
             buf[bufidx++] = 0;
             nodes[j].ccl = &buf[buf_begin];
@@ -220,28 +225,23 @@ int re_compile(const char *pattern, re_comp *compiled)
         /* Quantifier: */
         case '{':
         {
-            if (ischar == 0) return 0;
+            if (ischar == 0) { return 0; }
             ischar = 0;
-            //nodes[j].type = QUANT;
+
             // consumes 2 chars (one char for each min and max <= 255)
-            if (bufidx >= MAX_REBUFLEN - 1)
-            {
-                return 0;
-            }
+            if (bufidx > MAX_REBUFLEN - 2) { return 0; }
             i++;
-            unsigned val = 0;
+            val = 0;
             do
             {
-                if (pattern[i] < '0' || pattern[i] > '9')
-                    return 0;
+                if (pattern[i] < '0' || pattern[i] > '9') { return 0; }
                 val = 10 * val + (pattern[i++] - '0');
             }
             while (pattern[i] != ',' && pattern[i] != '}');
-            if (val > MAX_QUANT)
-            {
-                return 0;
-            }
+
+            if (val > MAX_QUANT) { return 0; }
             buf[bufidx] = val;
+
             if (pattern[i] == ',')
             {
                 i++;
@@ -254,15 +254,11 @@ int re_compile(const char *pattern, re_comp *compiled)
                     val = 0;
                     while (pattern[i] != '}')
                     {
-                        if (pattern[i] < '0' || pattern[i] > '9')
-                            return 0;
+                        if (pattern[i] < '0' || pattern[i] > '9') { return 0; }
                         val = 10 * val + (pattern[i++] - '0');
                     }
 
-                    if (val > MAX_QUANT || val < buf[bufidx])
-                    {
-                        return 0;
-                    }
+                    if (val > MAX_QUANT || val < buf[bufidx]) { return 0; }
                 }
             }
             nodes[j].type = (pattern[i + 1] == '?') ? (i++, QUANT_LAZY) : QUANT;
@@ -272,12 +268,7 @@ int re_compile(const char *pattern, re_comp *compiled)
         } break;
 
         /* Other characters: */
-        default:
-        {
-            ischar = 1;
-            nodes[j].type = CHAR;
-            nodes[j].ch = c;
-        } break;
+        default: ischar = 1; nodes[j].type = CHAR; nodes[j].ch = c; break;
         }
         i += 1;
         j += 1;
@@ -288,34 +279,21 @@ int re_compile(const char *pattern, re_comp *compiled)
     return 1;
 }
 
-/* Private functions: */
-static int matchdigit(char c)
-{
-    return ((c >= '0') && (c <= '9'));
-}
-static int matchalpha(char c)
-{
-    return ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z'));
-}
-static int matchwhitespace(char c)
-{
-    return ((c == ' ') || (c == '\t') || (c == '\n') || (c == '\r') || (c == '\f') || (c == '\v'));
-}
-static int matchalphanum(char c)
-{
-    return ((c == '_') || matchalpha(c) || matchdigit(c));
-}
+#define RE_MATCHDIGIT(c) ((c >= '0') && (c <= '9'))
+#define RE_MATCHALPHA(c) ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z'))
+#define RE_MATCHSPACE(c) ((c == ' ') || (c == '\t') || (c == '\n') || (c == '\r') || (c == '\f') || (c == '\v'))
+#define RE_MATCHALNUM(c) ((c == '_') || RE_MATCHALPHA(c) || RE_MATCHDIGIT(c))
 
 static int matchmetachar(char c, char mc)
 {
     switch (mc)
     {
-    case 'd': return  matchdigit(c);
-    case 'D': return !matchdigit(c);
-    case 'w': return  matchalphanum(c);
-    case 'W': return !matchalphanum(c);
-    case 's': return  matchwhitespace(c);
-    case 'S': return !matchwhitespace(c);
+    case 'd': return  RE_MATCHDIGIT(c);
+    case 'D': return !RE_MATCHDIGIT(c);
+    case 'w': return  RE_MATCHALNUM(c);
+    case 'W': return !RE_MATCHALNUM(c);
+    case 's': return  RE_MATCHSPACE(c);
+    case 'S': return !RE_MATCHSPACE(c);
     default:  return (c == mc);
     }
 }
@@ -327,26 +305,17 @@ static int matchcharclass(char c, const unsigned char *str)
         if (str[0] == '\\')
         {
             // if (str[1] == '\0') { return 0; } // shouldn't happen; compiling would also fail
-            if (matchmetachar(c, str[1]))
-            {
-                return 1;
-            }
+            if (matchmetachar(c, str[1])) { return 1; }
             str += 2;
         }
         else if (str[1] == '-' && str[2] != '\0')
         {
-            if (c >= str[0] && c <= str[2])
-            {
-                return 1;
-            }
+            if (c >= str[0] && c <= str[2]) { return 1; }
             str += 3;
         }
         else
         {
-            if (c == *str)
-            {
-                return 1;
-            }
+            if (c == *str) { return 1; }
             str += 1;
         }
     }
@@ -354,19 +323,26 @@ static int matchcharclass(char c, const unsigned char *str)
     return 0;
 }
 
+
+#ifndef RE_DOTANY
+#define RE_MATCHDOT(c)   ((c != '\n') && (c != '\r'))
+#else
+#define RE_MATCHDOT(c)   (1)
+#endif
+
 static int matchone(const re_node *p, char c)
 {
     switch (p->type)
     {
-    case DOT:        return (c != '\n' && c != '\r');
+    case DOT:        return  RE_MATCHDOT(c);
     case CCLASS:     return  matchcharclass(c, p->ccl);
     case INV_CCLASS: return !matchcharclass(c, p->ccl);
-    case DIGIT:      return  matchdigit(c);
-    case NOT_DIGIT:  return !matchdigit(c);
-    case ALPHA:      return  matchalphanum(c);
-    case NOT_ALPHA:  return !matchalphanum(c);
-    case WSPACE:     return  matchwhitespace(c);
-    case NOT_WSPACE: return !matchwhitespace(c);
+    case DIGIT:      return  RE_MATCHDIGIT(c);
+    case NOT_DIGIT:  return !RE_MATCHDIGIT(c);
+    case ALPHA:      return  RE_MATCHALNUM(c);
+    case NOT_ALPHA:  return !RE_MATCHALNUM(c);
+    case WSPACE:     return  RE_MATCHSPACE(c);
+    case NOT_WSPACE: return !RE_MATCHSPACE(c);
     default:         return (p->ch == c);
     }
 }
@@ -376,12 +352,12 @@ static const char *matchquant_lazy(const re_node *p, const char *text, int min, 
     const char *end;
     max -= min;
     while (min > 0 && *text && matchone(p, *text)) { text++; min--; }
-    if (min > 0)
-        return 0;
+    if (min > 0) { return 0; }
+
     do
     {
-        if ((end = matchpattern(p + 2, text)))
-            return end;
+        end = matchpattern(p + 2, text--);
+        if (end) { return end; }
         max--;
     }
     while (max >= 0 && *text && matchone(p, *text++));
@@ -396,8 +372,8 @@ static const char *matchquant(const re_node *p, const char *text, int min, int m
 
     while (text - start >= min)
     {
-        if ((end = matchpattern(p + 2, text--)))
-            return end;
+        end = matchpattern(p + 2, text--);
+        if (end) { return end; }
     }
 
     return 0;
@@ -465,9 +441,7 @@ void re_print(const re_comp *compiled)
     for (i = 0; i < MAX_RENODES; ++i)
     {
         if (pattern[i].type == NONE)
-        {
             break;
-        }
 
         printf("type: %s", types[pattern[i].type]);
         if (pattern[i].type == CCLASS || pattern[i].type == INV_CCLASS)
