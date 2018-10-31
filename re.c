@@ -1,7 +1,7 @@
 
 #include "re.h"
 
-#define TRE_MAXQUANT   255  // Max b in {a,b}. 255 since a & b are char
+#define TRE_MAXQUANT  1024  // Max b in {a,b}. must be < ushrt_max
 #define TRE_MAXPLUS  40000  // For + and *,  > 32768 for test2
 
 #define TRE_TYPES_X  X(NONE) X(BEGIN) X(END) \
@@ -87,7 +87,7 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
 
     int bufidx = 0;
 
-    unsigned val; // for parsing numbers in {m,n}
+    unsigned long val; // for parsing numbers in {m,n}
     char c;       // current char in pattern
     int i = 0;    // index into pattern
     int j = 0;    // index into tnode
@@ -206,8 +206,8 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
             ischar = 0;
 
             // Use a char for each min and max (<= 255)
-            if (bufidx > TRE_MAX_BUFLEN - 2)
-                return tre_err("Buffer overflow for quantifier");
+            //if (bufidx > TRE_MAX_BUFLEN - 2)
+            //    return tre_err("Buffer overflow for quantifier");
             i++;
             val = 0;
             do
@@ -220,7 +220,7 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
 
             if (val > TRE_MAXQUANT)
                 return tre_err("Quantifier min value too big");
-            buf[bufidx] = val;
+            tnode[j].mn[0] = val;
 
             if (pattern[i] == ',')
             {
@@ -239,14 +239,12 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
                         val = 10 * val + (pattern[i++] - '0');
                     }
 
-                    if (val > TRE_MAXQUANT || val < buf[bufidx])
+                    if (val > TRE_MAXQUANT || val < tnode[j].mn[0])
                         return tre_err("Quantifier max value too big or less than min value");
                 }
             }
             tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LQUANT) : TRE_QUANT;
-            buf[bufidx + 1] = val;
-            tnode[j].ccl = &buf[bufidx];
-            bufidx += 2;
+            tnode[j].mn[1] = val;
         } break;
 
         // Regular characters
@@ -335,28 +333,28 @@ static int matchone(const tre_node *tnode, char c)
 #undef TRE_MATCHALNUM
 #undef TRE_MATCHDOT
 
-static const char *matchquant_lazy(const tre_node *tnode, const char *text, int min, int max)
+static const char *matchquant_lazy(const tre_node *tnode, const char *text, unsigned min, unsigned max)
 {
     const char *end;
-    max -= min;
-    while (min > 0 && *text && matchone(tnode, *text)) { text++; min--; }
-    if (min > 0) { return 0; }
+    max = max - min + 1;
+    while (min && *text && matchone(tnode, *text)) { text++; min--; }
+    if (min) { return 0; }
 
     do
     {
-        end = matchpattern(tnode + 2, text--);
+        end = matchpattern(tnode + 2, text);
         if (end) { return end; }
         max--;
     }
-    while (max >= 0 && *text && matchone(tnode, *text++));
+    while (max && *text && matchone(tnode, *text++));
 
     return 0;
 }
 
-static const char *matchquant(const tre_node *tnode, const char *text, int min, int max)
+static const char *matchquant(const tre_node *tnode, const char *text, unsigned min, unsigned max)
 {
     const char *end, *start = text;
-    while (max > 0 && *text && matchone(tnode, *text)) { text++; max--; }
+    while (max && *text && matchone(tnode, *text)) { text++; max--; }
 
     while (text - start >= min)
     {
@@ -380,28 +378,26 @@ static const char *matchpattern(const tre_node *tnode, const char *text)
         {
             return (*text == '\0') ? text : 0;
         }
-        else
+
+        switch (tnode[1].type)
         {
-            switch (tnode[1].type)
-            {
-            case TRE_QMARK:
-                return matchquant(tnode, text, 0, 1);
-            case TRE_LQMARK:
-                return matchquant_lazy(tnode, text, 0, 1);
-            case TRE_QUANT:
-                return matchquant(tnode, text, tnode[1].ccl[0], tnode[1].ccl[1]);
-            case TRE_LQUANT:
-                return matchquant_lazy(tnode, text, tnode[1].ccl[0], tnode[1].ccl[1]);
-            case TRE_STAR:
-                return matchquant(tnode, text, 0, TRE_MAXPLUS);
-            case TRE_LSTAR:
-                return matchquant_lazy(tnode, text, 0, TRE_MAXPLUS);
-            case TRE_PLUS:
-                return matchquant(tnode, text, 1, TRE_MAXPLUS);
-            case TRE_LPLUS:
-                return matchquant_lazy(tnode, text, 1, TRE_MAXPLUS);
-            default: break; // w/e
-            }
+        case TRE_QMARK:
+            return matchquant(tnode, text, 0, 1);
+        case TRE_LQMARK:
+            return matchquant_lazy(tnode, text, 0, 1);
+        case TRE_QUANT:
+            return matchquant(tnode, text, tnode[1].mn[0], tnode[1].mn[1]);
+        case TRE_LQUANT:
+            return matchquant_lazy(tnode, text, tnode[1].mn[0], tnode[1].mn[1]);
+        case TRE_STAR:
+            return matchquant(tnode, text, 0, TRE_MAXPLUS);
+        case TRE_LSTAR:
+            return matchquant_lazy(tnode, text, 0, TRE_MAXPLUS);
+        case TRE_PLUS:
+            return matchquant(tnode, text, 1, TRE_MAXPLUS);
+        case TRE_LPLUS:
+            return matchquant_lazy(tnode, text, 1, TRE_MAXPLUS);
+        default: break; // w/e
         }
     }
     while (*text && matchone(tnode++, *text++));
@@ -446,7 +442,7 @@ void tre_print(const tre_comp *tregex)
         }
         else if (tnode[i].type == TRE_QUANT || tnode[i].type == TRE_LQUANT)
         {
-            printf(" {%d,%d}", tnode[i].ccl[0], tnode[i].ccl[1]);
+            printf(" {%d,%d}", tnode[i].mn[0], tnode[i].mn[1]);
         }
         else if (tnode[i].type == TRE_CHAR)
         {

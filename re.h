@@ -53,6 +53,7 @@ struct tre_node
     {
         unsigned char  ch;  // character itself
         unsigned char *ccl; // for class buffer and quantifier min max
+        unsigned short mn[2];
     };
 };
 
