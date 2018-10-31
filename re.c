@@ -1,87 +1,57 @@
-/*
- *
- * Mini regex-module inspired by Rob Pike's regex code described in:
- *
- * http://www.cs.princeton.edu/courses/archive/spr09/cos333/beautiful.html
- *
- *
- *
- * Supports:
- * ---------
- *   '^'        Start anchor, matches start of string
- *   '$'        End anchor, matches end of string
- *
- *   '*'        Asterisk, match zero or more (greedy, *? lazy)
- *   '+'        Plus, match one or more (greedy, +? lazy)
- *   '{m,n}'    Quantifier, match min. 'm' and max. 'n' (greedy, {m,n}? lazy)
- *   '{m}'                  exactly 'm'
- *   '{m,}'                 match min 'm' and max. MAX_QUANT
- *   '?'        Question, match zero or one (greedy, ?? lazy)
- *
- *   '.'        Dot, matches any character except newline (\r, \n)
- *   '[abc]'    Character class, match if one of {'a', 'b', 'c'}
- *   '[^abc]'   Inverted class, match if NOT one of {'a', 'b', 'c'}
- *   '[a-zA-Z]' Character ranges, the character set of the ranges { a-z | A-Z }
- *   '\s'       Whitespace, \t \f \r \n \v and spaces
- *   '\S'       Non-whitespace
- *   '\w'       Alphanumeric, [a-zA-Z0-9_]
- *   '\W'       Non-alphanumeric
- *   '\d'       Digits, [0-9]
- *   '\D'       Non-digits
- *   '\X'       Character itself where X matches [^sSwWdD] (e.g. '\\' is '\')
- *
- */
-
-
 
 #include "re.h"
-#include <stdio.h>
 
+#define TRE_MAXQUANT   255  // Max b in {a,b}. 255 since a & b are char
+#define TRE_MAXPLUS  40000  // For + and *,  > 32768 for test2
 
-/* Definitions: */
-#define MAX_QUANT           255    /* Max b in {a,b}. 255 since a & b are char   */
-#define MAX_COUNT         40000    /* for + and *,  above 32768 for test2        */
-//#define RE_DOTANY  //dot matches everything including \r and \n
+#define TRE_TYPES_X  X(NONE) X(BEGIN) X(END) \
+        X(QUANT) X(LQUANT) X(QMARK) X(LQMARK) X(STAR) X(LSTAR) X(PLUS) X(LPLUS) \
+        X(DOT) X(CHAR) X(CLASS) X(NCLASS) X(DIGIT) X(NDIGIT) X(ALPHA) X(NALPHA) X(SPACE) X(NSPACE)
 
-
-#define X_RE_TYPES  X(NONE) X(DOT) X(BEGIN) X(END) X(QUANT) X(QUANT_LAZY) \
-        X(QMARK) X(QMARK_LAZY) X(STAR) X(STAR_LAZY) X(PLUS) X(PLUS_LAZY) \
-        X(CHAR) X(CCLASS) X(INV_CCLASS) X(DIGIT) X(NOT_DIGIT) X(ALPHA) X(NOT_ALPHA) \
-        X(WSPACE) X(NOT_WSPACE) X(BRANCH)
-
-#define X(A) A,
-enum { X_RE_TYPES };
+#define X(A) TRE_##A,
+enum { TRE_TYPES_X };
 #undef X
 
+#ifndef TRE_SILENT
+#include "stdio.h"
+#endif
 
-
-/* Private function declarations: */
-static const char *matchpattern(const re_node *pattern, const char *text);
-
-/* Public functions: */
-const char *re_match(const char *pattern, const char *text, const char **end)
+static int tre_err(const char *msg)
 {
-    re_comp compiled = {0};
-    int ret = re_compile(pattern, &compiled);
-    if (!ret)
-    {
-        printf("compiling pattern '%s' failed\n", pattern);
-        return 0;
-    }
-    return re_matchp(&compiled, text, end);
+#ifndef TRE_SILENT
+    fprintf(stderr, "%s\n", msg);
+#endif
+    return 0;
 }
 
-const char *re_matchp(const re_comp *compiled, const char *text, const char **end)
+TRE_DEF const char *tre_compile_match(const char *pattern, const char *text, const char **end)
 {
-    if (!compiled || !text)
+    tre_comp tregex = {0};
+    if (!tre_compile(pattern, &tregex))
+    {
+        tre_err("Compiling pattern failed");
         return 0;
+    }
+
+    return tre_match(&tregex, text, end);
+}
+
+static const char *matchpattern(const tre_node *nodes, const char *text);
+
+TRE_DEF const char *tre_match(const tre_comp *tregex, const char *text, const char **end)
+{
+    if (!tregex || !text)
+    {
+        tre_err("NULL text or tre_comp");
+        return 0;
+    }
 
     const char *mend;
-    const re_node *node = compiled->nodes;
+    const tre_node *nodes = tregex->nodes;
 
-    if (node[0].type == BEGIN)
+    if (nodes[0].type == TRE_BEGIN)
     {
-        mend = matchpattern(&node[1], text);
+        mend = matchpattern(nodes + 1, text);
         if (mend)
         {
             if (end) { *end = mend; }
@@ -92,7 +62,7 @@ const char *re_matchp(const re_comp *compiled, const char *text, const char **en
 
     do
     {
-        mend = matchpattern(node, text);
+        mend = matchpattern(nodes, text);
         if (mend)
         {
             //if (!*text) //Fixme: ???
@@ -106,140 +76,150 @@ const char *re_matchp(const re_comp *compiled, const char *text, const char **en
     return 0;
 }
 
-int re_compile(const char *pattern, re_comp *compiled)
+TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
 {
-    if (!compiled)
-        return 0;
-    re_node *nodes = compiled->nodes;
-    unsigned char *buf = compiled->buffer;
-    unsigned char ischar = 0;
+    if (!tregex || !pattern || !*pattern)
+        return tre_err("NULL/empty string or tre_comp");
+    
+    tre_node *tnode = tregex->nodes;
+    unsigned char *buf = tregex->buffer;
+    unsigned char ischar = 0; // is the last node quantifiable
 
     int bufidx = 0;
 
     unsigned val; // for parsing numbers in {m,n}
-    char c;     /* current char in pattern   */
-    int i = 0;  /* index into pattern        */
-    int j = 0;  /* index into nodes    */
+    char c;       // current char in pattern
+    int i = 0;    // index into pattern
+    int j = 0;    // index into tnode
 
-    while (pattern[i] != '\0' && (j + 1 < MAX_RENODES))
+    while (pattern[i] != '\0' && (j + 1 < TRE_MAX_NODES))
     {
         c = pattern[i];
 
         switch (c)
         {
-        /* Meta-characters: */
-        case '^': ischar = 0; nodes[j].type = BEGIN; break;
-        case '$': ischar = 0; nodes[j].type = END;   break;
-        case '.': ischar = 1; nodes[j].type = DOT;   break;
+        // Meta-characters
+        case '^': ischar = 0; tnode[j].type = TRE_BEGIN; break;
+        case '$': ischar = 0; tnode[j].type = TRE_END;   break;
+        case '.': ischar = 1; tnode[j].type = TRE_DOT;   break;
         case '*':
-            if (ischar == 0) { return 0; }
+            if (ischar == 0) { return tre_err("Non-quantifiable before *"); }
             ischar = 0;
-            nodes[j].type = (pattern[i + 1] == '?') ? (i++, STAR_LAZY) : STAR; break;
+            tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LSTAR) : TRE_STAR; break;
         case '+':
-            if (ischar == 0) { return 0; }
+            if (ischar == 0) { return tre_err("Non-quantifiable before +"); }
             ischar = 0;
-            nodes[j].type = (pattern[i + 1] == '?') ? (i++, PLUS_LAZY) : PLUS; break;
+            tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LPLUS) : TRE_PLUS; break;
         case '?':
-            if (ischar == 0) { return 0; }
+            if (ischar == 0) { return tre_err("Non-quantifiable before ?"); }
             ischar = 0;
-            nodes[j].type = (pattern[i + 1] == '?') ? (i++, QMARK_LAZY) : QMARK; break;
-        /*    case '|': {    nodes[j].type = BRANCH;          } break; <-- not working properly */
+            tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LQMARK) : TRE_QMARK; break;
 
-        /* Escaped character-classes (\s \w ...): */
+        // Escaped characters
         case '\\':
         {
             ischar = 1;
             i++;
-            // dangling slash ?
-            if (pattern[i] == '\0') { return 0; }
+            // dangling?
+            if (pattern[i] == '\0') { return tre_err("Dangling \\"); }
 
             switch (pattern[i])
             {
-            /* Meta-character: */
-            case 'd': nodes[j].type = DIGIT;      break;
-            case 'D': nodes[j].type = NOT_DIGIT;  break;
-            case 'w': nodes[j].type = ALPHA;      break;
-            case 'W': nodes[j].type = NOT_ALPHA;  break;
-            case 's': nodes[j].type = WSPACE;     break;
-            case 'S': nodes[j].type = NOT_WSPACE; break;
+            // Meta-character:
+            case 'd': tnode[j].type = TRE_DIGIT;  break;
+            case 'D': tnode[j].type = TRE_NDIGIT; break;
+            case 'w': tnode[j].type = TRE_ALPHA;  break;
+            case 'W': tnode[j].type = TRE_NALPHA; break;
+            case 's': tnode[j].type = TRE_SPACE;  break;
+            case 'S': tnode[j].type = TRE_NSPACE; break;
 
-            /* Escaped character, e.g. '.' or '$' */
-            default: nodes[j].type = CHAR; nodes[j].ch = pattern[i]; break;
+            // Not in [dDwWsS]
+            default: tnode[j].type = TRE_CHAR; tnode[j].ch = pattern[i]; break;
             }
         } break;
 
-        /* Character class: */
+        // Character class
         case '[':
         {
             ischar = 1;
-            /* Remember where the char-buffer starts. */
             int buf_begin = bufidx;
             char nc = pattern[i + 1];
 
-            /* Look-ahead to determine if negated */
-            nodes[j].type = (nc == '^') ? (i++, INV_CCLASS) : CCLASS;
+            // Look-ahead to determine if negated
+            tnode[j].type = (nc == '^') ? (i++, TRE_NCLASS) : TRE_CLASS;
 
-            /* Copy characters inside [..] to buffer */
-            while (pattern[++i] != ']' && pattern[i] != '\0') /* Missing ] */
+            // Copy characters inside [..] to buffer
+            while (pattern[++i] != ']' && pattern[i] != '\0')
             {
                 if (pattern[i] == '\\')
                 {
                     nc = pattern[i + 1];
-                    if (!nc) { return 0; }
+                    if (!nc) 
+                        return tre_err("Dangling \\ in class");
 
-                    // skip slash for non meta chars and slash
+                    // skip slash for non-meta characters and slash
                     if (nc == 's' || nc == 'S' || nc == 'w' || nc == 'W' ||
                             nc == 'd' || nc == 'D' || nc == '\\')
                     {
-                        if (bufidx > MAX_REBUFLEN - 3) { return 0; }
+                        if (bufidx > TRE_MAX_BUFLEN - 3)
+                            return tre_err("Buffer overflow at meta in class");
                         buf[bufidx++] = pattern[i++];
                     }
                     else
                     {
-                        if (bufidx > MAX_REBUFLEN - 2) { return 0; }
+                        if (bufidx > TRE_MAX_BUFLEN - 2)
+                            return tre_err("Buffer overflow at escaped-char in class");
                         i++;
                     }
                     buf[bufidx++] = pattern[i];
                 }
                 else if (pattern[i + 1] == '-' && pattern[i + 2] != '0')
                 {
-                    if (pattern[i] > pattern[i + 2]) { return 0; }
-                    if (bufidx > MAX_REBUFLEN - 4) { return 0; }
+                    if (pattern[i] > pattern[i + 2])
+                        return tre_err("Incorrect range in class");
+                    if (bufidx > TRE_MAX_BUFLEN - 4)
+                        return tre_err("Buffer overflow at range in class");
                     buf[bufidx++] = pattern[i++];
                     buf[bufidx++] = pattern[i++];
                     buf[bufidx++] = pattern[i];
                 }
                 else
                 {
-                    if (bufidx > MAX_REBUFLEN - 2) { return 0; }
+                    if (bufidx > TRE_MAX_BUFLEN - 2)
+                        return tre_err("Buffer overflow at char in class");
                     buf[bufidx++] = pattern[i];
                 }
             }
 
-            if (pattern[i] != ']') { return 0; }
-            /* Null-terminate string end */
+            if (pattern[i] != ']')
+                return tre_err("Non terminated class");
+            // Nul-terminated string
             buf[bufidx++] = 0;
-            nodes[j].ccl = &buf[buf_begin];
+            tnode[j].ccl = &buf[buf_begin];
         } break;
 
-        /* Quantifier: */
+        // Quantifier
         case '{':
         {
-            if (ischar == 0) { return 0; }
+            if (ischar == 0)
+                return tre_err("Non-quantifiable before {m,n}");
             ischar = 0;
 
-            // consumes 2 chars (one char for each min and max <= 255)
-            if (bufidx > MAX_REBUFLEN - 2) { return 0; }
+            // Use a char for each min and max (<= 255)
+            if (bufidx > TRE_MAX_BUFLEN - 2)
+                return tre_err("Buffer overflow for quantifier");
             i++;
             val = 0;
             do
             {
-                if (pattern[i] < '0' || pattern[i] > '9') { return 0; }
+                if (pattern[i] < '0' || pattern[i] > '9')
+                    return tre_err("Non-digit in quantifier min value");
                 val = 10 * val + (pattern[i++] - '0');
             }
             while (pattern[i] != ',' && pattern[i] != '}');
 
-            if (val > MAX_QUANT) { return 0; }
+            if (val > TRE_MAXQUANT)
+                return tre_err("Quantifier min value too big");
             buf[bufidx] = val;
 
             if (pattern[i] == ',')
@@ -247,53 +227,55 @@ int re_compile(const char *pattern, re_comp *compiled)
                 i++;
                 if (pattern[i] == '}')
                 {
-                    val = MAX_QUANT;
+                    val = TRE_MAXQUANT;
                 }
                 else
                 {
                     val = 0;
                     while (pattern[i] != '}')
                     {
-                        if (pattern[i] < '0' || pattern[i] > '9') { return 0; }
+                        if (pattern[i] < '0' || pattern[i] > '9')
+                            return tre_err("Non-digit in quantifier max value");
                         val = 10 * val + (pattern[i++] - '0');
                     }
 
-                    if (val > MAX_QUANT || val < buf[bufidx]) { return 0; }
+                    if (val > TRE_MAXQUANT || val < buf[bufidx])
+                        return tre_err("Quantifier max value too big or less than min value");
                 }
             }
-            nodes[j].type = (pattern[i + 1] == '?') ? (i++, QUANT_LAZY) : QUANT;
+            tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LQUANT) : TRE_QUANT;
             buf[bufidx + 1] = val;
-            nodes[j].ccl = &buf[bufidx];
+            tnode[j].ccl = &buf[bufidx];
             bufidx += 2;
         } break;
 
-        /* Other characters: */
-        default: ischar = 1; nodes[j].type = CHAR; nodes[j].ch = c; break;
+        // Regular characters
+        default: ischar = 1; tnode[j].type = TRE_CHAR; tnode[j].ch = c; break;
         }
         i += 1;
         j += 1;
     }
-    /* 'NONE' is a sentinel used to indicate end-of-pattern */
-    nodes[j].type = NONE;
+    // 'TRE_NONE' is a sentinel used to indicate end-of-pattern
+    tnode[j].type = TRE_NONE;
 
     return 1;
 }
 
-#define RE_MATCHDIGIT(c) ((c >= '0') && (c <= '9'))
-#define RE_MATCHALPHA(c) ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z'))
-#define RE_MATCHSPACE(c) ((c == ' ') || (c == '\t') || (c == '\n') || (c == '\r') || (c == '\f') || (c == '\v'))
-#define RE_MATCHALNUM(c) ((c == '_') || RE_MATCHALPHA(c) || RE_MATCHDIGIT(c))
+#define TRE_MATCHDIGIT(c) ((c >= '0') && (c <= '9'))
+#define TRE_MATCHALPHA(c) ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z'))
+#define TRE_MATCHSPACE(c) ((c == ' ') || (c == '\t') || (c == '\n') || (c == '\r') || (c == '\f') || (c == '\v'))
+#define TRE_MATCHALNUM(c) ((c == '_') || TRE_MATCHALPHA(c) || TRE_MATCHDIGIT(c))
 
 static int matchmetachar(char c, char mc)
 {
     switch (mc)
     {
-    case 'd': return  RE_MATCHDIGIT(c);
-    case 'D': return !RE_MATCHDIGIT(c);
-    case 'w': return  RE_MATCHALNUM(c);
-    case 'W': return !RE_MATCHALNUM(c);
-    case 's': return  RE_MATCHSPACE(c);
-    case 'S': return !RE_MATCHSPACE(c);
+    case 'd': return  TRE_MATCHDIGIT(c);
+    case 'D': return !TRE_MATCHDIGIT(c);
+    case 'w': return  TRE_MATCHALNUM(c);
+    case 'W': return !TRE_MATCHALNUM(c);
+    case 's': return  TRE_MATCHSPACE(c);
+    case 'S': return !TRE_MATCHSPACE(c);
     default:  return (c == mc);
     }
 }
@@ -324,150 +306,156 @@ static int matchcharclass(char c, const unsigned char *str)
 }
 
 
-#ifndef RE_DOTANY
-#define RE_MATCHDOT(c)   ((c != '\n') && (c != '\r'))
+#ifndef TRE_DOTANY
+#define TRE_MATCHDOT(c)   ((c != '\n') && (c != '\r'))
 #else
-#define RE_MATCHDOT(c)   (1)
+#define TRE_MATCHDOT(c)   (1)
 #endif
 
-static int matchone(const re_node *p, char c)
+static int matchone(const tre_node *tnode, char c)
 {
-    switch (p->type)
+    switch (tnode->type)
     {
-    case DOT:        return  RE_MATCHDOT(c);
-    case CCLASS:     return  matchcharclass(c, p->ccl);
-    case INV_CCLASS: return !matchcharclass(c, p->ccl);
-    case DIGIT:      return  RE_MATCHDIGIT(c);
-    case NOT_DIGIT:  return !RE_MATCHDIGIT(c);
-    case ALPHA:      return  RE_MATCHALNUM(c);
-    case NOT_ALPHA:  return !RE_MATCHALNUM(c);
-    case WSPACE:     return  RE_MATCHSPACE(c);
-    case NOT_WSPACE: return !RE_MATCHSPACE(c);
-    default:         return (p->ch == c);
+    case TRE_DOT:    return  TRE_MATCHDOT(c);
+    case TRE_CLASS:  return  matchcharclass(c, tnode->ccl);
+    case TRE_NCLASS: return !matchcharclass(c, tnode->ccl);
+    case TRE_DIGIT:  return  TRE_MATCHDIGIT(c);
+    case TRE_NDIGIT: return !TRE_MATCHDIGIT(c);
+    case TRE_ALPHA:  return  TRE_MATCHALNUM(c);
+    case TRE_NALPHA: return !TRE_MATCHALNUM(c);
+    case TRE_SPACE:  return  TRE_MATCHSPACE(c);
+    case TRE_NSPACE: return !TRE_MATCHSPACE(c);
+    default:         return (tnode->ch == c);
     }
 }
 
-static const char *matchquant_lazy(const re_node *p, const char *text, int min, int max)
+#undef TRE_MATCHDIGIT
+#undef TRE_MATCHALPHA
+#undef TRE_MATCHSPACE
+#undef TRE_MATCHALNUM
+#undef TRE_MATCHDOT
+
+static const char *matchquant_lazy(const tre_node *tnode, const char *text, int min, int max)
 {
     const char *end;
     max -= min;
-    while (min > 0 && *text && matchone(p, *text)) { text++; min--; }
+    while (min > 0 && *text && matchone(tnode, *text)) { text++; min--; }
     if (min > 0) { return 0; }
 
     do
     {
-        end = matchpattern(p + 2, text--);
+        end = matchpattern(tnode + 2, text--);
         if (end) { return end; }
         max--;
     }
-    while (max >= 0 && *text && matchone(p, *text++));
+    while (max >= 0 && *text && matchone(tnode, *text++));
 
     return 0;
 }
 
-static const char *matchquant(const re_node *p, const char *text, int min, int max)
+static const char *matchquant(const tre_node *tnode, const char *text, int min, int max)
 {
     const char *end, *start = text;
-    while (max > 0 && *text && matchone(p, *text)) { text++; max--; }
+    while (max > 0 && *text && matchone(tnode, *text)) { text++; max--; }
 
     while (text - start >= min)
     {
-        end = matchpattern(p + 2, text--);
+        end = matchpattern(tnode + 2, text--);
         if (end) { return end; }
     }
 
     return 0;
 }
 
-/* Iterative matching */
-static const char *matchpattern(const re_node *pattern, const char *text)
+// Iterative matching
+static const char *matchpattern(const tre_node *tnode, const char *text)
 {
     do
     {
-        if (pattern[0].type == NONE)
+        if (tnode[0].type == TRE_NONE)
         {
             return text;
         }
-        else if ((pattern[0].type == END) && pattern[1].type == NONE)
+        else if ((tnode[0].type == TRE_END) && tnode[1].type == TRE_NONE)
         {
             return (*text == '\0') ? text : 0;
         }
         else
         {
-            switch (pattern[1].type)
+            switch (tnode[1].type)
             {
-            case QMARK:
-                return matchquant(pattern, text, 0, 1);
-            case QMARK_LAZY:
-                return matchquant_lazy(pattern, text, 0, 1);
-            case QUANT:
-                return matchquant(pattern, text, pattern[1].ccl[0], pattern[1].ccl[1]);
-            case QUANT_LAZY:
-                return matchquant_lazy(pattern, text, pattern[1].ccl[0], pattern[1].ccl[1]);
-            case STAR:
-                return matchquant(pattern, text, 0, MAX_COUNT);
-            case STAR_LAZY:
-                return matchquant_lazy(pattern, text, 0, MAX_COUNT);
-            case PLUS:
-                return matchquant(pattern, text, 1, MAX_COUNT);
-            case PLUS_LAZY:
-                return matchquant_lazy(pattern, text, 1, MAX_COUNT);
+            case TRE_QMARK:
+                return matchquant(tnode, text, 0, 1);
+            case TRE_LQMARK:
+                return matchquant_lazy(tnode, text, 0, 1);
+            case TRE_QUANT:
+                return matchquant(tnode, text, tnode[1].ccl[0], tnode[1].ccl[1]);
+            case TRE_LQUANT:
+                return matchquant_lazy(tnode, text, tnode[1].ccl[0], tnode[1].ccl[1]);
+            case TRE_STAR:
+                return matchquant(tnode, text, 0, TRE_MAXPLUS);
+            case TRE_LSTAR:
+                return matchquant_lazy(tnode, text, 0, TRE_MAXPLUS);
+            case TRE_PLUS:
+                return matchquant(tnode, text, 1, TRE_MAXPLUS);
+            case TRE_LPLUS:
+                return matchquant_lazy(tnode, text, 1, TRE_MAXPLUS);
             default: break; // w/e
             }
         }
     }
-    while (*text && matchone(pattern++, *text++));
+    while (*text && matchone(tnode++, *text++));
 
     return 0;
 }
 
-#ifndef RE_DISABLE_PRINT
+#ifndef TRE_SILENT
 
+void tre_print(const tre_comp *tregex)
+{
 #define X(A) #A,
-static const char *types[] = { X_RE_TYPES };
+    static const char *tre_typenames[] = { TRE_TYPES_X };
 #undef X
 
-#include <stdio.h>
-void re_print(const re_comp *compiled)
-{
-    if (!compiled)
+    if (!tregex)
     {
         printf("NULL compiled regex detected\n");
         return;
     }
 
-    const re_node *pattern = compiled->nodes;
+    const tre_node *tnode = tregex->nodes;
     int i;
-    for (i = 0; i < MAX_RENODES; ++i)
+    for (i = 0; i < TRE_MAX_NODES; ++i)
     {
-        if (pattern[i].type == NONE)
+        if (tnode[i].type == TRE_NONE)
             break;
 
-        printf("type: %s", types[pattern[i].type]);
-        if (pattern[i].type == CCLASS || pattern[i].type == INV_CCLASS)
+        printf("type: %s", tre_typenames[tnode[i].type]);
+        if (tnode[i].type == TRE_CLASS || tnode[i].type == TRE_NCLASS)
         {
-            printf(pattern[i].type == CCLASS ? " [" : " [^");
+            printf(tnode[i].type == TRE_CLASS ? " [" : " [^");
             int j;
             char c;
-            for (j = 0; j < MAX_REBUFLEN; ++j)
+            for (j = 0; j < TRE_MAX_BUFLEN; ++j)
             {
-                c = pattern[i].ccl[j];
+                c = tnode[i].ccl[j];
                 if (c == '\0') break;
                 printf(c == ']' ? "\\%c" : "%c", c);
             }
             printf("]");
         }
-        else if (pattern[i].type == QUANT || pattern[i].type == QUANT_LAZY)
+        else if (tnode[i].type == TRE_QUANT || tnode[i].type == TRE_LQUANT)
         {
-            printf(" {%d,%d}", pattern[i].ccl[0], pattern[i].ccl[1]);
+            printf(" {%d,%d}", tnode[i].ccl[0], tnode[i].ccl[1]);
         }
-        else if (pattern[i].type == CHAR)
+        else if (tnode[i].type == TRE_CHAR)
         {
-            printf(" '%c'", pattern[i].ch);
+            printf(" '%c'", tnode[i].ch);
         }
         printf("\n");
     }
 }
-#endif
+#endif // TRE_DISABLE_PRINT
 
-#undef X_RE_TYPES
+#undef TRE_TYPES_X
+

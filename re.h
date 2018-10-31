@@ -1,70 +1,82 @@
-/*
- *
- * Mini regex-module inspired by Rob Pike's regex code described in:
- *
- * http://www.cs.princeton.edu/courses/archive/spr09/cos333/beautiful.html
- *
- *
- *
- * Supports:
- * ---------
- *   '.'        Dot, matches any character
- *   '^'        Start anchor, matches beginning of string
- *   '$'        End anchor, matches end of string
- *   '*'        Asterisk, match zero or more (greedy)
- *   '+'        Plus, match one or more (greedy)
- *   '?'        Question, match zero or one (non-greedy)
- *   '[abc]'    Character class, match if one of {'a', 'b', 'c'}
- *   '[^abc]'   Inverted class, match if NOT one of {'a', 'b', 'c'} -- NOTE: feature is currently broken!
- *   '[a-zA-Z]' Character ranges, the character set of the ranges { a-z | A-Z }
- *   '\s'       Whitespace, \t \f \r \n \v and spaces
- *   '\S'       Non-whitespace
- *   '\w'       Alphanumeric, [a-zA-Z0-9_]
- *   '\W'       Non-alphanumeric
- *   '\d'       Digits, [0-9]
- *   '\D'       Non-digits
- *
- *
- */
+// Public Domain Tiny Regular Expressions Library
+// Forked from https://github.com/kokke/tiny-regex-c
+//
+// Supports:
+// ---------
+//   '^'        Start anchor, matches start of string
+//   '$'        End anchor, matches end of string
+// ---------
+//   '*'        Asterisk, match zero or more (greedy, *? lazy)
+//   '+'        Plus, match one or more (greedy, +? lazy)
+//   '{m,n}'    Quantifier, match min. 'm' and max. 'n' (greedy, {m,n}? lazy)
+//   '{m}'                  exactly 'm'
+//   '{m,}'                 match min 'm' and max. MAX_QUANT
+//   '?'        Question, match zero or one (greedy, ?? lazy)
+// ---------
+//   '.'        Dot, matches any character except newline (\r, \n)
+//   '[abc]'    Character class, match if one of {'a', 'b', 'c'}
+//   '[^abc]'   Inverted class, match if NOT one of {'a', 'b', 'c'}
+//   '[a-zA-Z]' Character ranges, the character set of the ranges { a-z | A-Z }
+//   '\s'       Whitespace, \t \f \r \n \v and spaces
+//   '\S'       Non-whitespace
+//   '\w'       Alphanumeric, [a-zA-Z0-9_]
+//   '\W'       Non-alphanumeric
+//   '\d'       Digits, [0-9]
+//   '\D'       Non-digits
+//   '\X'       Character itself where X matches [^sSwWdD] (e.g. '\\' is '\')
+// ---------
 
-#ifdef __cplusplus
-extern "C"{
+
+#ifndef TRE_H_INCLUDE
+#define TRE_H_INCLUDE
+
+#ifndef TRE_STATIC
+#define TRE_DEF extern
+#else
+#define TRE_DEF static
 #endif
 
-#define MAX_RENODES    64  // Max number of regex nodes in expression.
-#define MAX_REBUFLEN  128  // Max length of character-class buffer in.
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-typedef struct re_node_t
+#define TRE_MAX_NODES    64  // Max number of regex nodes in expression.
+#define TRE_MAX_BUFLEN  128  // Max length of character-class buffer in.
+
+typedef struct tre_node tre_node;
+typedef struct tre_comp tre_comp;
+
+struct tre_node
 {
-  unsigned char  type;   /* CHAR, STAR, etc.                      */
-  union
-  {
-    unsigned char  ch;   /*      the character itself             */
-    unsigned char* ccl;  /*  OR  a pointer to characters in class */
-  };
-} re_node;
+    unsigned char  type;
+    union
+    {
+        unsigned char  ch;  // character itself
+        unsigned char *ccl; // for class buffer and quantifier min max
+    };
+};
 
-typedef struct re_comp_t
+struct tre_comp
 {
-  re_node nodes[MAX_RENODES];
-  unsigned char buffer[MAX_REBUFLEN];
-} re_comp;
+    tre_node nodes[TRE_MAX_NODES];
+    unsigned char buffer[TRE_MAX_BUFLEN];
+};
 
-/* Compile regex string pattern to a regex_t-array. */
-int re_compile(const char *pattern, re_comp *compiled);
+// Compile regex string pattern as tre_comp struct tregex
+TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex);
 
+// Match tregex in text and return the match start or null if there is no match
+// If end is not null set it to the match end
+TRE_DEF const char *tre_match(const tre_comp *tregex, const char *text, const char **end);
 
-/* Find matches of the compiled pattern inside text. */
-const char *re_matchp(const re_comp *compiled, const char *text, const char **next);
+// Same but compiles pattern then matches
+TRE_DEF const char *tre_compile_match(const char *pattern, const char *text, const char **end);
 
-
-/* Find matches of the txt pattern inside text (will compile automatically first). */
-const char *re_match(const char *pattern, const char *text, const char **next);
-
-
-void re_print(const re_comp *compiled);
-
+// Print the pattern
+TRE_DEF void tre_print(const tre_comp *tregex);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif // TRE_H_INCLUDE
