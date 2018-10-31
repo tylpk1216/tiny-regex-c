@@ -2077,8 +2077,8 @@ int main()
   printf("\n\n");
   printf("Testing pathological pattern '.+nonexisting.+' to force worst-case asymptotic performance: \n");
 
-  re_comp regex;
-  re_compile(".+nonexisting.+", &regex);
+  tre_comp tregex;
+  tre_compile(".+nonexisting.+", &tregex);
   for (i = 0; i < ntests; ++i)
   {
     old = buf[bufsizes[i]];
@@ -2086,7 +2086,7 @@ int main()
 
     printf("  matching on %lu bytes of test input: ", bufsizes[i]);
     fflush(stdout);
-    printf("%d \n", re_matchp(&regex, buf, NULL) ? 1 : 0);
+    printf("%d \n", tre_match(&tregex, buf, NULL) ? 1 : 0);
 
     buf[bufsizes[i]] = old;
   }

@@ -9,12 +9,12 @@ int main(int argc, char** argv)
 {
   if (argc >= 2)
   {
-    re_comp regex;
-    int ret = re_compile(argv[1], &regex);
+    tre_comp tregex;
+    int ret = tre_compile(argv[1], &tregex);
     if (ret)
     {
       printf("regexp: '%s'\n", argv[1]);
-      re_print(&regex);
+      tre_print(&tregex);
     }
     else
     {
@@ -28,7 +28,7 @@ int main(int argc, char** argv)
     }
     
     const char *end = argv[2];
-    const char *m = re_matchp(&regex, argv[2], &end);
+    const char *m = tre_match(&tregex, argv[2], &end);
     if (m)
     {
       printf("match at %li and length %li\n", m - argv[2], end - m);

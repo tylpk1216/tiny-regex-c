@@ -101,30 +101,30 @@ int main()
     size_t ntests = sizeof(test_vector) / sizeof(*test_vector);
     size_t nfailed = 0;
     size_t i;
-    re_comp regex;
+    tre_comp tregex;
 
     for (i = 0; i < ntests; ++i)
     {
         pattern = test_vector[i][1];
         text = test_vector[i][2];
         should_fail = (test_vector[i][0] == NOK);
-        int ret = re_compile(pattern, &regex);
+        int ret = tre_compile(pattern, &tregex);
         if(ret == 0)
         {
           printf("\n");
-          re_print(&regex);
+          tre_print(&tregex);
           fprintf(stderr, "[%lu/%lu]: pattern '%s' failed to compile \n", (i+1), ntests, pattern);
           nfailed += 1;
           continue;
         }
-        const char *m = re_matchp(&regex, text, NULL);
+        const char *m = tre_match(&tregex, text, NULL);
 
         if (should_fail)
         {
             if (m)
             {
                 printf("\n");
-                re_print(&regex);
+                tre_print(&tregex);
                 fprintf(stderr, "[%lu/%lu]: pattern '%s' matched '%s' unexpectedly. \n", (i+1), ntests, pattern, text);
                 nfailed += 1;
             }
@@ -134,7 +134,7 @@ int main()
             if (!m)
             {
                 printf("\n");
-                re_print(&regex);
+                tre_print(&tregex);
                 fprintf(stderr, "[%lu/%lu]: pattern '%s' didn't match '%s' as expected. \n", (i+1), ntests, pattern, text);
                 nfailed += 1;
             }

@@ -15,7 +15,7 @@ int main(int argc, char** argv)
 {
   if (argc == 3)
   {
-    const char *m = re_match(argv[1], argv[2], NULL);
+    const char *m = tre_compile_match(argv[1], argv[2], NULL);
     if (m) 
       return 0;
   }
