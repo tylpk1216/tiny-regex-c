@@ -101,6 +101,7 @@ TRE_DEF void tre_print(const tre_comp *tregex);
 enum { TRE_TYPES_X };
 #undef X
 
+#include "string.h"
 #ifndef TRE_SILENT
 #include "stdio.h"
 #endif
@@ -127,22 +128,23 @@ TRE_DEF const char *tre_compile_match(const char *pattern, const char *text, con
     return tre_match(&tregex, text, end);
 }
 
-static const char *matchpattern(const tre_node *nodes, const char *text);
+static const char *matchpattern(const tre_node *nodes, const char *text, const char *tend);
 
-TRE_DEF const char *tre_match(const tre_comp *tregex, const char *text, const char **end)
+TRE_DEF const char *tre_nmatch(const tre_comp *tregex, const char *text, unsigned tlen, const char **end)
 {
-    if (!tregex || !text)
+    if (!tregex || !text || !tlen)
     {
         tre_err("NULL text or tre_comp");
         return 0;
     }
 
+    const char *tend = text + tlen;
     const char *mend;
     const tre_node *nodes = tregex->nodes;
 
     if (nodes->type == TRE_BEGIN)
     {
-        mend = matchpattern(nodes + 1, text);
+        mend = matchpattern(nodes + 1, text, tend);
         if (mend)
         {
             if (end) { *end = mend; }
@@ -153,7 +155,7 @@ TRE_DEF const char *tre_match(const tre_comp *tregex, const char *text, const ch
 
     do
     {
-        mend = matchpattern(nodes, text);
+        mend = matchpattern(nodes, text, tend);
         if (mend)
         {
             //if (!*text) //Fixme: ???
@@ -167,18 +169,21 @@ TRE_DEF const char *tre_match(const tre_comp *tregex, const char *text, const ch
     return 0;
 }
 
+TRE_DEF const char *tre_match(const tre_comp *tregex, const char *text, const char **end)
+{
+    return tre_nmatch(tregex, text, strlen(text), end);
+}
+
 #define TRE_ISMETA(c) ((c=='s')||(c=='S')||(c=='w')||(c=='W')||(c=='d')||(c=='D'))
 // s,S,w,W,d,D or esc
 #define TRE_METAORESC(c) (TRE_ISMETA(c)||(c=='\\'))
-// s,S,w,W,d,D or nul
-#define TRE_METAORNUL(c) (TRE_ISMETA(c)||(c=='\0'))
 
 //#define REQUIRE_SPACE(X, S) if(idx > TRE_MAX_BUFLEN - (X)) {return tre_err(S);}
-TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
+TRE_DEF int tre_ncompile(const char *pattern, unsigned plen, tre_comp *tregex)
 {
-    if (!tregex || !pattern || !*pattern)
+    if (!tregex || !pattern || !plen)
         return tre_err("NULL/empty string or tre_comp");
-    
+
     tre_node *tnode = tregex->nodes;
     unsigned char *buf = tregex->buffer;
     unsigned char quable = 0; // is the last node quantifiable
@@ -187,10 +192,10 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
     int idx = 0;
 
     unsigned long val; // for parsing numbers in {m,n}
-    int i = 0;    // index into pattern
-    int j = 0;    // index into tnode
+    unsigned i = 0;    // index into pattern
+    unsigned j = 0;    // index into tnode
 
-    while (pattern[i] != '\0' && (j + 1 < TRE_MAX_NODES))
+    while (i < plen && (j + 1 < TRE_MAX_NODES))
     {
         switch (pattern[i])
         {
@@ -217,7 +222,7 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
             quable = 1;
             i++;
             // dangling?
-            if (pattern[i] == '\0') { return tre_err("Dangling \\"); }
+            if (i >= plen) { return tre_err("Dangling \\"); }
 
             switch (pattern[i])
             {
@@ -244,13 +249,13 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
             tnode[j].ccl = buf + idx;
 
             // Copy characters inside [..] to buffer
-            while (pattern[++i] != ']' && pattern[i] != '\0')
+            while (pattern[++i] != ']' && i < plen)
             {
                 if (pattern[i] == '\\')
                 {
-                    if (!pattern[i + 1]) 
+                    if (i + 1 >= plen)
                         return tre_err("Dangling \\ in class");
-                    
+
                     // needs escaping ?
                     if (TRE_METAORESC(pattern[i + 1]))
                     {
@@ -258,7 +263,7 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
                             return tre_err("Buffer overflow at <esc>char in class");
                         buf[idx++] = pattern[i++];
                         buf[idx++] = pattern[i];
-                        if(pattern[i + 1] != '\\')
+                        if (pattern[i + 1] != '\\')
                             continue;
                     }
                     else // skip esc
@@ -274,14 +279,14 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
                         return tre_err("Buffer overflow at [esc]char in class");
                     buf[idx++] = pattern[i];
                 }
-                
+
                 // check range
-                if (pattern[i + 1] != '-' || pattern[i + 2] == '\0' || pattern[i + 2] == ']')
+                if (pattern[i + 1] != '-' || i + 2 >= plen || pattern[i + 2] == ']')
                     continue;
                 rmax = (pattern[i + 2] == '\\');
-                if (rmax && TRE_METAORNUL(pattern[i + 3]))
+                if (rmax && (i + 3 >= plen || TRE_ISMETA(pattern[i + 3])))
                     continue;
-                
+
                 rmax = rmax ? pattern[i + 3] : pattern[i + 2];
                 if (rmax < pattern[i])
                     return tre_err("Incorrect range in class");
@@ -310,7 +315,7 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
             val = 0;
             do
             {
-                if (pattern[i] < '0' || pattern[i] > '9')
+                if (i >= plen || pattern[i] < '0' || pattern[i] > '9')
                     return tre_err("Non-digit in quantifier min value");
                 val = 10 * val + (pattern[i++] - '0');
             }
@@ -322,7 +327,8 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
 
             if (pattern[i] == ',')
             {
-                i++;
+                if (++i >= plen)
+                    return tre_err("Unexpected end of string in quantifier");
                 if (pattern[i] == '}')
                 {
                     val = TRE_MAXQUANT;
@@ -332,7 +338,7 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
                     val = 0;
                     while (pattern[i] != '}')
                     {
-                        if (pattern[i] < '0' || pattern[i] > '9')
+                        if (i >= plen || pattern[i] < '0' || pattern[i] > '9')
                             return tre_err("Non-digit in quantifier max value");
                         val = 10 * val + (pattern[i++] - '0');
                     }
@@ -341,20 +347,25 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
                         return tre_err("Quantifier max value too big or less than min value");
                 }
             }
-            tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LQUANT) : TRE_QUANT;
+            tnode[j].type = (i + 1 < plen && pattern[i + 1] == '?') ? (i++, TRE_LQUANT) : TRE_QUANT;
             tnode[j].mn[1] = val;
         } break;
 
         // Regular characters
         default: quable = 1; tnode[j].type = TRE_CHAR; tnode[j].ch = pattern[i]; break;
         }
-        i += 1;
-        j += 1;
+        i++;
+        j++;
     }
     // 'TRE_NONE' is a sentinel used to indicate end-of-pattern
     tnode[j].type = TRE_NONE;
 
     return 1;
+}
+
+TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
+{
+    return tre_ncompile(pattern, strlen(pattern), tregex);
 }
 
 #define TRE_MATCHDIGIT(c) ((c >= '0') && (c <= '9'))
@@ -394,13 +405,13 @@ static int matchcharclass(char c, const unsigned char *str)
             if (c == *str) { return 1; }
             str += 1;
         }
-        
+
         if (*str != '-' || !str[1])
             continue;
         rmax = (str[1] == '\\');
-        if(rmax && TRE_ISMETA(str[2]))
+        if (rmax && TRE_ISMETA(str[2]))
             continue;
-        
+
         rmax = rmax ? str[2] : str[1];
         if (c >= str[-1] && c <= rmax) { return 1; }
         str++;
@@ -421,7 +432,7 @@ static int matchone(const tre_node *tnode, char c)
 {
     switch (tnode->type)
     {
-    case TRE_CHAR:   return  (tnode->ch == c);
+    case TRE_CHAR:   return (tnode->ch == c);
     case TRE_DOT:    return  TRE_MATCHDOT(c);
     case TRE_CLASS:  return  matchcharclass(c, tnode->ccl);
     case TRE_NCLASS: return !matchcharclass(c, tnode->ccl);
@@ -441,32 +452,34 @@ static int matchone(const tre_node *tnode, char c)
 #undef TRE_MATCHALNUM
 #undef TRE_MATCHDOT
 
-static const char *matchquant_lazy(const tre_node *nodes, const char *text, unsigned min, unsigned max)
+static const char *matchquant_lazy(const tre_node *nodes, const char *text, const char *tend,
+                                   unsigned min, unsigned max)
 {
     const char *end;
     max = max - min + 1;
-    while (min && *text && matchone(nodes, *text)) { text++; min--; }
+    while (min && text < tend && matchone(nodes, *text)) { text++; min--; }
     if (min) { return 0; }
 
     do
     {
-        end = matchpattern(nodes + 2, text);
+        end = matchpattern(nodes + 2, text, tend);
         if (end) { return end; }
         max--;
     }
-    while (max && *text && matchone(nodes, *text++));
+    while (max && text < tend && matchone(nodes, *text++));
 
     return 0;
 }
 
-static const char *matchquant(const tre_node *nodes, const char *text, unsigned min, unsigned max)
+static const char *matchquant(const tre_node *nodes, const char *text, const char *tend,
+                              unsigned min, unsigned max)
 {
     const char *end, *start = text;
-    while (max && *text && matchone(nodes, *text)) { text++; max--; }
+    while (max && text < tend && matchone(nodes, *text)) { text++; max--; }
 
     while (text - start >= min)
     {
-        end = matchpattern(nodes + 2, text--);
+        end = matchpattern(nodes + 2, text--, tend);
         if (end) { return end; }
     }
 
@@ -474,7 +487,7 @@ static const char *matchquant(const tre_node *nodes, const char *text, unsigned 
 }
 
 // Iterative matching
-static const char *matchpattern(const tre_node *nodes, const char *text)
+static const char *matchpattern(const tre_node *nodes, const char *text, const char *tend)
 {
     do
     {
@@ -484,31 +497,31 @@ static const char *matchpattern(const tre_node *nodes, const char *text)
         }
         if ((nodes[0].type == TRE_END) && nodes[1].type == TRE_NONE)
         {
-            return (*text == '\0') ? text : 0;
+            return (text == tend) ? text : 0;
         }
 
         switch (nodes[1].type)
         {
         case TRE_QMARK:
-            return matchquant(nodes, text, 0, 1);
+            return matchquant(nodes, text, tend, 0, 1);
         case TRE_LQMARK:
-            return matchquant_lazy(nodes, text, 0, 1);
+            return matchquant_lazy(nodes, text, tend, 0, 1);
         case TRE_QUANT:
-            return matchquant(nodes, text, nodes[1].mn[0], nodes[1].mn[1]);
+            return matchquant(nodes, text, tend, nodes[1].mn[0], nodes[1].mn[1]);
         case TRE_LQUANT:
-            return matchquant_lazy(nodes, text, nodes[1].mn[0], nodes[1].mn[1]);
+            return matchquant_lazy(nodes, text, tend, nodes[1].mn[0], nodes[1].mn[1]);
         case TRE_STAR:
-            return matchquant(nodes, text, 0, TRE_MAXPLUS);
+            return matchquant(nodes, text, tend, 0, TRE_MAXPLUS);
         case TRE_LSTAR:
-            return matchquant_lazy(nodes, text, 0, TRE_MAXPLUS);
+            return matchquant_lazy(nodes, text, tend, 0, TRE_MAXPLUS);
         case TRE_PLUS:
-            return matchquant(nodes, text, 1, TRE_MAXPLUS);
+            return matchquant(nodes, text, tend, 1, TRE_MAXPLUS);
         case TRE_LPLUS:
-            return matchquant_lazy(nodes, text, 1, TRE_MAXPLUS);
-        // default: break; // w/e
+            return matchquant_lazy(nodes, text, tend, 1, TRE_MAXPLUS);
+            // default: break; // w/e
         }
     }
-    while (*text && matchone(nodes++, *text++));
+    while (text < tend && matchone(nodes++, *text++));
 
     return 0;
 }
@@ -563,38 +576,38 @@ This software is available under 2 licenses -- choose whichever you prefer.
 ------------------------------------------------------------------------------
 ALTERNATIVE A - Public Domain (www.unlicense.org)
 This is free and unencumbered software released into the public domain.
-Anyone is free to copy, modify, publish, use, compile, sell, or distribute this 
-software, either in source code form or as a compiled binary, for any purpose, 
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
 commercial or non-commercial, and by any means.
-In jurisdictions that recognize copyright laws, the author or authors of this 
-software dedicate any and all copyright interest in the software to the public 
-domain. We make this dedication for the benefit of the public at large and to 
-the detriment of our heirs and successors. We intend this dedication to be an 
-overt act of relinquishment in perpetuity of all present and future rights to 
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
 this software under copyright law.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN 
-ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION 
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ------------------------------------------------------------------------------
 ALTERNATIVE B - MIT License
 Copyright (c) 2018 kokke, monolifed
-Permission is hereby granted, free of charge, to any person obtaining a copy of 
-this software and associated documentation files (the "Software"), to deal in 
-the Software without restriction, including without limitation the rights to 
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies 
-of the Software, and to permit persons to whom the Software is furnished to do 
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
 so, subject to the following conditions:
-The above copyright notice and this permission notice shall be included in all 
+The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ------------------------------------------------------------------------------
 */
