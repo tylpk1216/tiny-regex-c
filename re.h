@@ -23,7 +23,7 @@
 //   '\W'       Non-alphanumeric
 //   '\d'       Digits, [0-9]
 //   '\D'       Non-digits
-//   '\X'       Character itself where X matches [^sSwWdD] (e.g. '\\' is '\')
+//   '\X'       Character itself; X in [^sSwWdD] (e.g. '\\' is '\')
 // ---------
 
 
@@ -49,6 +49,7 @@ extern "C" {
 typedef struct tre_node tre_node;
 typedef struct tre_comp tre_comp;
 
+// 8 and 16 bytes on x86 and x86_64 resp.
 struct tre_node
 {
     unsigned char  type;
@@ -139,7 +140,7 @@ TRE_DEF const char *tre_match(const tre_comp *tregex, const char *text, const ch
     const char *mend;
     const tre_node *nodes = tregex->nodes;
 
-    if (nodes[0].type == TRE_BEGIN)
+    if (nodes->type == TRE_BEGIN)
     {
         mend = matchpattern(nodes + 1, text);
         if (mend)
@@ -167,11 +168,12 @@ TRE_DEF const char *tre_match(const tre_comp *tregex, const char *text, const ch
 }
 
 #define TRE_ISMETA(c) ((c=='s')||(c=='S')||(c=='w')||(c=='W')||(c=='d')||(c=='D'))
-// s,S,w,W,d,D or slash
-#define TRE_ISMETA_ESC(c) (TRE_ISMETA(c)||(c=='\\'))
+// s,S,w,W,d,D or esc
+#define TRE_METAORESC(c) (TRE_ISMETA(c)||(c=='\\'))
 // s,S,w,W,d,D or nul
-#define TRE_ISMETA_NUL(c) (TRE_ISMETA(c)||(c=='\0'))
+#define TRE_METAORNUL(c) (TRE_ISMETA(c)||(c=='\0'))
 
+//#define REQUIRE_SPACE(X, S) if(idx > TRE_MAX_BUFLEN - (X)) {return tre_err(S);}
 TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
 {
     if (!tregex || !pattern || !*pattern)
@@ -179,42 +181,40 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
     
     tre_node *tnode = tregex->nodes;
     unsigned char *buf = tregex->buffer;
-    unsigned char ischar = 0; // is the last node quantifiable
+    unsigned char quable = 0; // is the last node quantifiable
+    unsigned char rmax; // max char in a range
 
-    int bufidx = 0;
+    int idx = 0;
 
     unsigned long val; // for parsing numbers in {m,n}
-    char c;       // current char in pattern
     int i = 0;    // index into pattern
     int j = 0;    // index into tnode
 
     while (pattern[i] != '\0' && (j + 1 < TRE_MAX_NODES))
     {
-        c = pattern[i];
-
-        switch (c)
+        switch (pattern[i])
         {
         // Meta-characters
-        case '^': ischar = 0; tnode[j].type = TRE_BEGIN; break;
-        case '$': ischar = 0; tnode[j].type = TRE_END;   break;
-        case '.': ischar = 1; tnode[j].type = TRE_DOT;   break;
+        case '^': quable = 0; tnode[j].type = TRE_BEGIN; break;
+        case '$': quable = 0; tnode[j].type = TRE_END;   break;
+        case '.': quable = 1; tnode[j].type = TRE_DOT;   break;
         case '*':
-            if (ischar == 0) { return tre_err("Non-quantifiable before *"); }
-            ischar = 0;
+            if (quable == 0) { return tre_err("Non-quantifiable before *"); }
+            quable = 0;
             tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LSTAR) : TRE_STAR; break;
         case '+':
-            if (ischar == 0) { return tre_err("Non-quantifiable before +"); }
-            ischar = 0;
+            if (quable == 0) { return tre_err("Non-quantifiable before +"); }
+            quable = 0;
             tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LPLUS) : TRE_PLUS; break;
         case '?':
-            if (ischar == 0) { return tre_err("Non-quantifiable before ?"); }
-            ischar = 0;
+            if (quable == 0) { return tre_err("Non-quantifiable before ?"); }
+            quable = 0;
             tnode[j].type = (pattern[i + 1] == '?') ? (i++, TRE_LQMARK) : TRE_QMARK; break;
 
         // Escaped characters
         case '\\':
         {
-            ischar = 1;
+            quable = 1;
             i++;
             // dangling?
             if (pattern[i] == '\0') { return tre_err("Dangling \\"); }
@@ -237,12 +237,11 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
         // Character class
         case '[':
         {
-            ischar = 1;
-            int buf_begin = bufidx;
-            char rstart;
+            quable = 1;
 
             // Look-ahead to determine if negated
             tnode[j].type = (pattern[i + 1] == '^') ? (i++, TRE_NCLASS) : TRE_CLASS;
+            tnode[j].ccl = buf + idx;
 
             // Copy characters inside [..] to buffer
             while (pattern[++i] != ']' && pattern[i] != '\0')
@@ -251,54 +250,61 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
                 {
                     if (!pattern[i + 1]) 
                         return tre_err("Dangling \\ in class");
-
-                    // needs slash ?
-                    if (TRE_ISMETA_ESC(pattern[i + 1]))
+                    
+                    // needs escaping ?
+                    if (TRE_METAORESC(pattern[i + 1]))
                     {
-                        if (bufidx > TRE_MAX_BUFLEN - 3)
-                            return tre_err("Buffer overflow at meta in class");
-                        buf[bufidx++] = pattern[i++];
-                        buf[bufidx++] = pattern[i];
-                        continue;
+                        if (idx > TRE_MAX_BUFLEN - 3)
+                            return tre_err("Buffer overflow at <esc>char in class");
+                        buf[idx++] = pattern[i++];
+                        buf[idx++] = pattern[i];
+                        if(pattern[i + 1] != '\\')
+                            continue;
                     }
-                    i++; // skip slash
+                    else // skip esc
+                    {
+                        if (idx > TRE_MAX_BUFLEN - 2)
+                            return tre_err("Buffer overflow at [esc]char in class");
+                        buf[idx++] = pattern[++i];
+                    }
                 }
-
-                if (pattern[i + 1] == '-' && pattern[i + 2] && pattern[i + 2] != ']' &&
-                    !(pattern[i + 2] == '\\' && TRE_ISMETA_NUL(pattern[i + 3])))
+                else
                 {
-                    rstart = pattern[i];
-                    i += (pattern[i] == '\\') ? 3 : 2;
-                    if (rstart > pattern[i])
-                        return tre_err("Incorrect range in class");
-                    if (bufidx > TRE_MAX_BUFLEN - 4)
-                        return tre_err("Buffer overflow at range in class");
-                    buf[bufidx++] = rstart;
-                    buf[bufidx++] = '-';
-                    buf[bufidx++] = pattern[i];
-                    continue;
+                    if (idx > TRE_MAX_BUFLEN - 2)
+                        return tre_err("Buffer overflow at [esc]char in class");
+                    buf[idx++] = pattern[i];
                 }
-                if (bufidx > TRE_MAX_BUFLEN - 2)
-                    return tre_err("Buffer overflow at char in class");
-                buf[bufidx++] = pattern[i];
+                
+                // check range
+                if (pattern[i + 1] != '-' || pattern[i + 2] == '\0' || pattern[i + 2] == ']')
+                    continue;
+                rmax = (pattern[i + 2] == '\\');
+                if (rmax && TRE_METAORNUL(pattern[i + 3]))
+                    continue;
+                
+                rmax = rmax ? pattern[i + 3] : pattern[i + 2];
+                if (rmax < pattern[i])
+                    return tre_err("Incorrect range in class");
+                if (idx > TRE_MAX_BUFLEN - 2)
+                    return tre_err("Buffer overflow at range - in class");
+                buf[idx++] = pattern[++i]; // '-'
             }
 
             if (pattern[i] != ']')
                 return tre_err("Non terminated class");
             // Nul-terminated string
-            buf[bufidx++] = 0;
-            tnode[j].ccl = &buf[buf_begin];
+            buf[idx++] = 0;
         } break;
 
         // Quantifier
         case '{':
         {
-            if (ischar == 0)
+            if (quable == 0)
                 return tre_err("Non-quantifiable before {m,n}");
-            ischar = 0;
+            quable = 0;
 
             // Use a char for each min and max (<= 255)
-            //if (bufidx > TRE_MAX_BUFLEN - 2)
+            //if (idx > TRE_MAX_BUFLEN - 2)
             //    return tre_err("Buffer overflow for quantifier");
             i++;
             val = 0;
@@ -340,7 +346,7 @@ TRE_DEF int tre_compile(const char *pattern, tre_comp *tregex)
         } break;
 
         // Regular characters
-        default: ischar = 1; tnode[j].type = TRE_CHAR; tnode[j].ch = c; break;
+        default: quable = 1; tnode[j].type = TRE_CHAR; tnode[j].ch = pattern[i]; break;
         }
         i += 1;
         j += 1;
@@ -370,26 +376,35 @@ static int matchmetachar(char c, char mc)
     }
 }
 
+// note: compiler makes sure that it is always esc + nonzero (sSwWdD\)
 static int matchcharclass(char c, const unsigned char *str)
 {
+    unsigned char rmax;
     while (*str != '\0')
     {
         if (str[0] == '\\')
         {
-            // if (str[1] == '\0') { return 0; } // shouldn't happen; compiling would also fail
             if (matchmetachar(c, str[1])) { return 1; }
             str += 2;
-        }
-        else if (str[1] == '-' && str[2] != '\0')
-        {
-            if (c >= str[0] && c <= str[2]) { return 1; }
-            str += 3;
+            if (TRE_ISMETA(*str))
+                continue;
         }
         else
         {
             if (c == *str) { return 1; }
             str += 1;
         }
+        
+        if (*str != '-' || !str[1])
+            continue;
+        rmax = (str[1] == '\\');
+        if(rmax && TRE_ISMETA(str[2]))
+            continue;
+        
+        rmax = rmax ? str[2] : str[1];
+        if (c >= str[-1] && c <= rmax) { return 1; }
+        str++;
+
     }
 
     return 0;
@@ -406,6 +421,7 @@ static int matchone(const tre_node *tnode, char c)
 {
     switch (tnode->type)
     {
+    case TRE_CHAR:   return  (tnode->ch == c);
     case TRE_DOT:    return  TRE_MATCHDOT(c);
     case TRE_CLASS:  return  matchcharclass(c, tnode->ccl);
     case TRE_NCLASS: return !matchcharclass(c, tnode->ccl);
@@ -415,7 +431,7 @@ static int matchone(const tre_node *tnode, char c)
     case TRE_NALPHA: return !TRE_MATCHALNUM(c);
     case TRE_SPACE:  return  TRE_MATCHSPACE(c);
     case TRE_NSPACE: return !TRE_MATCHSPACE(c);
-    default:         return (tnode->ch == c);
+    default: return 0; // return tre_err("Stray ^ or $");
     }
 }
 
@@ -425,32 +441,32 @@ static int matchone(const tre_node *tnode, char c)
 #undef TRE_MATCHALNUM
 #undef TRE_MATCHDOT
 
-static const char *matchquant_lazy(const tre_node *tnode, const char *text, unsigned min, unsigned max)
+static const char *matchquant_lazy(const tre_node *nodes, const char *text, unsigned min, unsigned max)
 {
     const char *end;
     max = max - min + 1;
-    while (min && *text && matchone(tnode, *text)) { text++; min--; }
+    while (min && *text && matchone(nodes, *text)) { text++; min--; }
     if (min) { return 0; }
 
     do
     {
-        end = matchpattern(tnode + 2, text);
+        end = matchpattern(nodes + 2, text);
         if (end) { return end; }
         max--;
     }
-    while (max && *text && matchone(tnode, *text++));
+    while (max && *text && matchone(nodes, *text++));
 
     return 0;
 }
 
-static const char *matchquant(const tre_node *tnode, const char *text, unsigned min, unsigned max)
+static const char *matchquant(const tre_node *nodes, const char *text, unsigned min, unsigned max)
 {
     const char *end, *start = text;
-    while (max && *text && matchone(tnode, *text)) { text++; max--; }
+    while (max && *text && matchone(nodes, *text)) { text++; max--; }
 
     while (text - start >= min)
     {
-        end = matchpattern(tnode + 2, text--);
+        end = matchpattern(nodes + 2, text--);
         if (end) { return end; }
     }
 
@@ -458,41 +474,41 @@ static const char *matchquant(const tre_node *tnode, const char *text, unsigned 
 }
 
 // Iterative matching
-static const char *matchpattern(const tre_node *tnode, const char *text)
+static const char *matchpattern(const tre_node *nodes, const char *text)
 {
     do
     {
-        if (tnode[0].type == TRE_NONE)
+        if (nodes[0].type == TRE_NONE)
         {
             return text;
         }
-        else if ((tnode[0].type == TRE_END) && tnode[1].type == TRE_NONE)
+        if ((nodes[0].type == TRE_END) && nodes[1].type == TRE_NONE)
         {
             return (*text == '\0') ? text : 0;
         }
 
-        switch (tnode[1].type)
+        switch (nodes[1].type)
         {
         case TRE_QMARK:
-            return matchquant(tnode, text, 0, 1);
+            return matchquant(nodes, text, 0, 1);
         case TRE_LQMARK:
-            return matchquant_lazy(tnode, text, 0, 1);
+            return matchquant_lazy(nodes, text, 0, 1);
         case TRE_QUANT:
-            return matchquant(tnode, text, tnode[1].mn[0], tnode[1].mn[1]);
+            return matchquant(nodes, text, nodes[1].mn[0], nodes[1].mn[1]);
         case TRE_LQUANT:
-            return matchquant_lazy(tnode, text, tnode[1].mn[0], tnode[1].mn[1]);
+            return matchquant_lazy(nodes, text, nodes[1].mn[0], nodes[1].mn[1]);
         case TRE_STAR:
-            return matchquant(tnode, text, 0, TRE_MAXPLUS);
+            return matchquant(nodes, text, 0, TRE_MAXPLUS);
         case TRE_LSTAR:
-            return matchquant_lazy(tnode, text, 0, TRE_MAXPLUS);
+            return matchquant_lazy(nodes, text, 0, TRE_MAXPLUS);
         case TRE_PLUS:
-            return matchquant(tnode, text, 1, TRE_MAXPLUS);
+            return matchquant(nodes, text, 1, TRE_MAXPLUS);
         case TRE_LPLUS:
-            return matchquant_lazy(tnode, text, 1, TRE_MAXPLUS);
-        default: break; // w/e
+            return matchquant_lazy(nodes, text, 1, TRE_MAXPLUS);
+        // default: break; // w/e
         }
     }
-    while (*text && matchone(tnode++, *text++));
+    while (*text && matchone(nodes++, *text++));
 
     return 0;
 }
@@ -564,7 +580,7 @@ ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ------------------------------------------------------------------------------
 ALTERNATIVE B - MIT License
-Copyright (c) 2017 monolifed
+Copyright (c) 2018 kokke, monolifed
 Permission is hereby granted, free of charge, to any person obtaining a copy of 
 this software and associated documentation files (the "Software"), to deal in 
 the Software without restriction, including without limitation the rights to 
