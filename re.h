@@ -164,7 +164,7 @@ TRE_DEF const char *tre_nmatch(const tre_comp *tregex, const char *text, unsigne
             return text;
         }
     }
-    while (*text++);
+    while (tend > text++);
 
     return 0;
 }
