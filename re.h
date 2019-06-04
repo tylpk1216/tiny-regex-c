@@ -118,7 +118,7 @@ static int tre_err(const char *msg)
 
 TRE_DEF const char *tre_compile_match(const char *pattern, const char *text, const char **end)
 {
-    tre_comp tregex = {0};
+    tre_comp tregex;// = {0};
     if (!tre_compile(pattern, &tregex))
     {
         tre_err("Compiling pattern failed");
@@ -477,7 +477,7 @@ static const char *matchquant(const tre_node *nodes, const char *text, const cha
     const char *end, *start = text;
     while (max && text < tend && matchone(nodes, *text)) { text++; max--; }
 
-    while (text - start >= min)
+    while (text - start >= (int)min)
     {
         end = matchpattern(nodes + 2, text--, tend);
         if (end) { return end; }
